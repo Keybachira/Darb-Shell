@@ -1,0 +1,7 @@
+# Local profile — Ollama, no remote requests (experimental on low-end hardware).
+[provider]
+name = "ollama"
+
+[performance]
+profile = "local"
+remote_requests = false

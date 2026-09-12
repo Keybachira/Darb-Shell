@@ -1,0 +1,22 @@
+[package]
+name = "darb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Darb Shell binary — bootstrap only (config, runtime, TUI init, shutdown)"
+
+[[bin]]
+name = "darb"
+path = "src/main.rs"
+
+[dependencies]
+darb-core.workspace = true
+darb-agent.workspace = true
+darb-tui.workspace = true
+darb-tools.workspace = true
+darb-context.workspace = true
+darb-memory.workspace = true
+darb-providers.workspace = true
+darb-plugins.workspace = true
+tokio.workspace = true
+anyhow.workspace = true

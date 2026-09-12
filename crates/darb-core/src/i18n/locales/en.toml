@@ -1,0 +1,11 @@
+[agent]
+thinking = "Thinking..."
+planning = "Creating plan..."
+executing = "Executing..."
+completed = "Completed"
+
+[file]
+created = "File created successfully"
+
+[review]
+passed = "Review passed"

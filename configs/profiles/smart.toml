@@ -1,0 +1,7 @@
+# Smart profile — bigger context, smarter model, more analysis.
+[performance]
+profile = "smart"
+
+[context]
+max_tokens = 32000
+lazy_indexing = false

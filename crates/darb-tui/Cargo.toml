@@ -1,0 +1,15 @@
+[package]
+name = "darb-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Darb TUI — Ratatui + Crossterm interface (presentation only, no business logic)"
+
+[dependencies]
+darb-core.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true

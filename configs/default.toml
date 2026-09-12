@@ -1,0 +1,30 @@
+# Darb Shell — default configuration (see Stacks §26, Arquitetura §52).
+# Human-edited config uses TOML. Secrets must use env vars, never this file.
+
+[app]
+language = "pt"
+profile = "eco"
+
+[provider]
+name = "openai"
+model = "..."
+
+[interface]
+language = "pt"
+mouse = true
+animations = false
+compact = false
+
+[context]
+max_tokens = 16000
+lazy_indexing = true
+
+[performance]
+profile = "eco"
+
+[permissions]
+read = "allow"
+edit = "ask"
+shell = "ask"
+delete = "ask"
+git_push = "deny"

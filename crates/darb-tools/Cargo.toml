@@ -1,0 +1,14 @@
+[package]
+name = "darb-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Darb Tools — filesystem, shell, search, git, tests, diagnostics, editor"
+
+[dependencies]
+darb-core.workspace = true
+darb-providers.workspace = true
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true

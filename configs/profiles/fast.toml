@@ -1,0 +1,8 @@
+# Fast profile — fast model, moderate context, low latency.
+[performance]
+profile = "fast"
+animations = false
+
+[context]
+max_tokens = 12000
+lazy_indexing = true

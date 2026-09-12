@@ -1,0 +1,9 @@
+# Eco profile — minimum resource usage (AMD E2-1800 target).
+[performance]
+profile = "eco"
+animations = false
+background_tasks = "minimum"
+
+[context]
+max_tokens = 8000
+lazy_indexing = true

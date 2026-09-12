@@ -1,0 +1,15 @@
+[package]
+name = "darb-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Darb Providers — provider interface + adapters (openai, anthropic, google, openrouter, ollama, custom)"
+
+[dependencies]
+darb-core.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true

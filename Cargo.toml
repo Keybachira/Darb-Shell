@@ -1,0 +1,42 @@
+[workspace]
+members = [
+    "apps/darb",
+    "crates/darb-core",
+    "crates/darb-agent",
+    "crates/darb-tui",
+    "crates/darb-tools",
+    "crates/darb-context",
+    "crates/darb-memory",
+    "crates/darb-providers",
+    "crates/darb-plugins",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Darb Shell Contributors"]
+description = "Darb Shell — AI-native coding environment for the terminal (lightweight, Rust, TUI)"
+
+[workspace.dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+anyhow = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tree-sitter = "0.25"
+
+darb-core = { path = "crates/darb-core" }
+darb-agent = { path = "crates/darb-agent" }
+darb-tui = { path = "crates/darb-tui" }
+darb-tools = { path = "crates/darb-tools" }
+darb-context = { path = "crates/darb-context" }
+darb-memory = { path = "crates/darb-memory" }
+darb-providers = { path = "crates/darb-providers" }
+darb-plugins = { path = "crates/darb-plugins" }

@@ -1,0 +1,13 @@
+[package]
+name = "darb-context"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Darb Context — indexer, project map, selector, tokenizer, compression, relevance (lazy)"
+
+[dependencies]
+darb-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tree-sitter.workspace = true

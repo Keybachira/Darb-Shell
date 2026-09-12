@@ -1,0 +1,16 @@
+/target/
+**/target/
+# Cargo.lock is committed for the binary workspace (see Stacks §15).
+.darb/
+.darb/logs/
+*.log
+.env
+.env.*
+*.pem
+*.key
+credentials.*
+secrets.*
+.vscode/
+.idea/
+*.orig
+*.rej

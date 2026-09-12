@@ -1,0 +1,13 @@
+[package]
+name = "darb-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Darb Memory — session / project memory backed by SQLite"
+
+[dependencies]
+darb-core.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true

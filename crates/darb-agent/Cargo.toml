@@ -1,0 +1,16 @@
+[package]
+name = "darb-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Darb Agent — planner, executor, reviewer, loop, tool calling, state"
+
+[dependencies]
+darb-core.workspace = true
+darb-tools.workspace = true
+darb-context.workspace = true
+darb-memory.workspace = true
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true

@@ -1,0 +1,8 @@
+[agent]
+thinking = "A pensar..."
+planning = "A criar plano..."
+executing = "A executar..."
+completed = "Concluído"
+
+[file]
+created = "Arquivo criado com sucesso"
