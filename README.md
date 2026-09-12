@@ -2,6 +2,7 @@
 
 > AI-native coding environment for the terminal, lightweight first (Rust + Ratatui + Crossterm).
 
+
 Stack e estrutura: `Docs/Darb Shell — Stacks e Estrutura de Pastas.md`
 Arquitetura: `Docs/Darb Shell — Arquitetura do Sistema.md`
 Regras: `Darb Shell — Regras para Contribuição e Modificação do Código.md`
