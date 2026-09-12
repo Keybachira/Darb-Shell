@@ -3,6 +3,26 @@ thinking = "A pensar..."
 planning = "A criar plano..."
 executing = "A executar..."
 completed = "Concluído"
+waiting = "A aguardar o modelo..."
+reviewing = "A rever..."
+retrying = "A tentar de novo..."
+failed = "Falhou"
+cancelled = "Cancelado"
+
+[permissions]
+ask = "A aguardar confirmação..."
 
 [file]
 created = "Arquivo criado com sucesso"
+
+[chat]
+you = "Você"
+darb = "Darb"
+
+[app]
+ready = "Pronto"
+
+[dialog]
+permission_title = "Permissão necessária"
+allow = "permitir"
+deny = "negar"

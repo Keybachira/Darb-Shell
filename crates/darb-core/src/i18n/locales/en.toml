@@ -3,9 +3,29 @@ thinking = "Thinking..."
 planning = "Creating plan..."
 executing = "Executing..."
 completed = "Completed"
+waiting = "Waiting for the model..."
+reviewing = "Reviewing..."
+retrying = "Retrying..."
+failed = "Failed"
+cancelled = "Cancelled"
+
+[permissions]
+ask = "Waiting for confirmation..."
 
 [file]
 created = "File created successfully"
 
 [review]
 passed = "Review passed"
+
+[chat]
+you = "You"
+darb = "Darb"
+
+[app]
+ready = "Ready"
+
+[dialog]
+permission_title = "Permission required"
+allow = "allow"
+deny = "deny"

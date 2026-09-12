@@ -191,8 +191,10 @@ dependencies = [
  "darb-context",
  "darb-core",
  "darb-memory",
+ "darb-providers",
  "darb-tools",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
 ]
@@ -262,6 +264,7 @@ dependencies = [
  "darb-core",
  "darb-providers",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
 ]
