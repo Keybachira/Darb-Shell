@@ -28,18 +28,51 @@ pub enum AgentState {
 /// Domain events. Small and cloneable: receivers only borrow what they need.
 #[derive(Debug, Clone)]
 pub enum DarbEvent {
-    AgentStarted { task: String },
-    AgentStateChanged { from: AgentState, to: AgentState },
-    ContextRequested { query: String },
-    ContextReady { files: usize },
-    ToolRequested { tool: String, target: String },
-    ToolCompleted { tool: String, success: bool },
-    PermissionRequested { tool: String, target: String },
-    PermissionResolved { tool: String, allowed: bool },
-    ReviewRequested { files: usize },
-    AgentFinished { summary: String },
+    AgentStarted {
+        task: String,
+    },
+    AgentStateChanged {
+        from: AgentState,
+        to: AgentState,
+    },
+    ContextRequested {
+        query: String,
+    },
+    ContextReady {
+        files: usize,
+    },
+    ToolRequested {
+        tool: String,
+        target: String,
+    },
+    ToolCompleted {
+        tool: String,
+        success: bool,
+    },
+    PermissionRequested {
+        tool: String,
+        target: String,
+    },
+    PermissionResolved {
+        tool: String,
+        allowed: bool,
+    },
+    ReviewRequested {
+        files: usize,
+    },
+    AgentFinished {
+        summary: String,
+    },
     ConfigReloaded,
-    ErrorOccurred { message: String },
+    ErrorOccurred {
+        message: String,
+    },
+    /// One streamed text fragment from the provider. The TUI appends it
+    /// to the in-progress answer; the final text still arrives via the
+    /// normal response path, so missing a delta only affects liveness.
+    ProviderDelta {
+        text: String,
+    },
 }
 
 /// Default channel capacity: large enough for an agent burst

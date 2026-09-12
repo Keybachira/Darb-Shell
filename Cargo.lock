@@ -172,6 +172,7 @@ name = "darb"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "crossterm",
  "darb-agent",
  "darb-context",
  "darb-core",
@@ -180,6 +181,7 @@ dependencies = [
  "darb-providers",
  "darb-tools",
  "darb-tui",
+ "ratatui",
  "tokio",
 ]
 
@@ -205,6 +207,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "darb-core",
+ "darb-tools",
  "serde",
  "thiserror",
  "tree-sitter",

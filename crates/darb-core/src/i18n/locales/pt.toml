@@ -1,28 +1,144 @@
+[app]
+ready = "Pronto"
+busy = "O agente está ocupado — aguarda que termine"
+offline = "IA remota indisponível — as ferramentas locais continuam a funcionar"
+cancelling = "A cancelar…"
+profile = "Perfil: {name}"
+tools = "ferramentas: {count}"
+cwd = "directório: {path}"
+config_reloaded = "configuração recarregada"
+provider_unavailable = "nota: IA remota indisponível ({reason}) — as ferramentas locais continuam a funcionar"
+memory_unavailable = "memória indisponível ({reason}) — a continuar sem transcrição"
+previous_session = "··· sessão anterior ···"
+
 [agent]
 thinking = "A pensar..."
 planning = "A criar plano..."
-executing = "A executar..."
-completed = "Concluído"
 waiting = "A aguardar o modelo..."
+executing = "A executar..."
 reviewing = "A rever..."
 retrying = "A tentar de novo..."
+completed = "Concluído"
 failed = "Falhou"
 cancelled = "Cancelado"
+tool_requested = "{tool} › {target}"
+tool_failed = "{tool} falhou"
+denied_by_user = "recusado pelo utilizador"
+error = "erro: {message}"
 
 [permissions]
 ask = "A aguardar confirmação..."
+allowed = "permitido: {tool} › {target}"
+denied = "negado: {tool} › {target}"
 
 [file]
 created = "Arquivo criado com sucesso"
+preview_title = "Ficheiro: {path}"
+empty = "sem ficheiro seleccionado"
+open_error = "não foi possível abrir {path}: {reason}"
 
 [chat]
 you = "Você"
 darb = "Darb"
+placeholder = "Pede ao Darb para alterar o teu projecto..."
+hint = "Enter enviar · Tab foco · Ctrl+K comandos · Ctrl+C cancelar"
 
-[app]
-ready = "Pronto"
+[panel]
+explorer = "Projecto"
+context = "Contexto"
+chat = "Chat"
+files = "Ficheiros"
+changes = "Alterações"
+terminal = "Terminal"
+git = "Git"
+tasks = "Tarefas"
+empty = "—"
+
+[explorer]
+empty = "(vazio)"
+parent = ".."
+
+[context]
+entries = "Entradas: {count}"
+files = "Ficheiros: {count}"
+tokens = "Tokens: {tokens}"
+model = "Modelo: {model}"
+
+[palette]
+title = "Comandos"
+hint = "↑↓ escolher · Enter executar · Esc fechar"
+no_match = "sem resultados"
+
+[cmd]
+toggle_explorer = "Mostrar/ocultar explorador"
+refresh_files = "Recarregar ficheiros"
+new_chat = "Nova conversa"
+git_status = "Estado do Git"
+show_diff = "Ver alterações (diff)"
+toggle_language = "Mudar idioma (pt/en)"
+open_chat = "Ir para Chat"
+open_files = "Ir para Ficheiros"
+open_changes = "Ir para Alterações"
+open_terminal = "Ir para Terminal"
+open_git = "Ir para Git"
+open_tasks = "Ir para Tarefas"
+quit = "Sair"
+
+[diff]
+empty = "sem alterações"
+
+[git]
+empty = "sem alterações (árvore limpa)"
+
+[tasks]
+empty = "sem tarefas"
+
+[terminal]
+empty = "sem comandos nesta sessão"
+hint = "Escreve um comando e Enter — passa sempre pelas permissões"
+exit_code = "saída: {code}"
 
 [dialog]
 permission_title = "Permissão necessária"
 allow = "permitir"
 deny = "negar"
+tool = "Ferramenta"
+target = "Alvo"
+
+[review]
+passed = "Revisão aprovada"
+
+[cli]
+version = "darb {version}"
+config_fallback = "darb: {reason} — a usar predefinições"
+locale_fallback = "darb: {reason} — a continuar com predefinições"
+no_cwd = "darb: não foi possível determinar o directório actual: {reason}"
+no_runtime = "darb: não foi possível iniciar o runtime assíncrono: {reason}"
+unknown_command = "comando desconhecido '{command}'"
+usage = """
+uso:
+  darb            abrir a TUI
+  darb init       inicializar .darb/ neste projecto
+  darb doctor     verificar o ambiente
+  darb version    imprimir a versão
+"""
+
+[doctor]
+title = "Darb Doctor"
+config = "Configuração"
+config_missing = "ficheiro não encontrado: {path}"
+provider = "Provider"
+provider_unimplemented = "não implementado nesta versão"
+key_set = "chave definida"
+key_missing = "chave em falta — IA remota indisponível"
+project = "Projecto"
+initialized = "{path} inicializado"
+not_initialized = "não inicializado (corre `darb init`) — utilizável na mesma"
+tool_missing = "'{binary}' não encontrado no PATH"
+all_passed = "Todas as verificações passaram."
+failed = "{count} verificação(ões) falharam."
+
+[init]
+created = "inicializado: {path}"
+exists = "já inicializado: {path}"
+error = "darb init: {reason}"

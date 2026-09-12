@@ -96,6 +96,14 @@ impl ToolRegistry {
         &self.root
     }
 
+    /// Record a one-time user confirmation for an exact tool + target.
+    /// The permission manager still decides on the next dispatch — this
+    /// only stores the grant it consumes there. Grants never override
+    /// denials.
+    pub fn grant_once(&self, tool: &str, target: &str) {
+        self.permissions.grant_once(tool, target);
+    }
+
     /// Check permission, then execute. The clock covers execution only,
     /// not the permission decision.
     pub fn dispatch(&self, request: &ToolRequest) -> ToolResult {

@@ -1057,10 +1057,33 @@ darb-tui/
 │
 ├── keybindings/
 │
+├── palette/
+│
 ├── theme/
 │
 └── lib.rs
 ```
+
+## Painéis e tabs
+
+O workspace mostra uma tab de cada vez (`Chat`, `Files`, `Changes`,
+`Terminal`, `Git`, `Tasks`). Trocar de tab nunca dispara trabalho: cada
+painel desenha dados que a aplicação já tem (`set_files`, `set_diff`,
+`set_git`, `push_terminal`, eventos).
+
+```text
+Ctrl + P   tab Files
+Ctrl + G   tab Git
+Ctrl + T   tab Terminal
+Tab        alterna o foco (input → explorer → workspace)
+↑ / ↓      mover no explorer focada, senão fazer scroll ao painel
+Enter      abrir no explorer, executar na tab Terminal, enviar no input
+Ctrl + K   command palette
+```
+
+O comando escrito na tab `Terminal` não é executado pela TUI: sai como
+`KeyOutcome::TerminalCommand` e passa pelo `ToolRegistry` e pelo
+Permission Manager, como qualquer outra ferramenta.
 
 ---
 
@@ -1180,6 +1203,27 @@ planning = "Creating plan..."
 executing = "Executing..."
 completed = "Completed"
 ```
+
+### Placeholders
+
+Valores com variáveis usam `{nome}`, para o tradutor controlar a ordem
+das palavras:
+
+```toml
+[app]
+
+profile = "Perfil: {name}"
+```
+
+```rust
+t!("app.profile", name = profile)
+```
+
+Placeholders sem argumento ficam visíveis (`{name}`) em vez de
+desaparecerem: uma tradução em falta aparece, não falha em silêncio.
+`pt.toml` e `en.toml` devem definir exactamente as mesmas chaves — o
+fallback `pt → en` é uma rede de segurança, não onde se guardam strings
+por traduzir.
 
 ---
 

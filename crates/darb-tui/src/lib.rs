@@ -6,5 +6,6 @@ pub mod components;
 pub mod dialogs;
 pub mod keybindings;
 pub mod layout;
+pub mod palette;
 pub mod theme;
 pub mod widgets;

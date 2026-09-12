@@ -25,6 +25,7 @@ pub fn is_legal_transition(from: &State, to: &State) -> bool {
             | (WaitingProvider, Executing)
             | (WaitingProvider, Completed)
             | (WaitingProvider, Failed)
+            | (WaitingProvider, Retrying)
             | (Executing, Reviewing)
             | (Executing, WaitingPermission)
             | (WaitingPermission, Executing)
@@ -72,5 +73,19 @@ mod tests {
     fn skips_are_illegal() {
         assert!(!is_legal_transition(&State::Idle, &State::Executing));
         assert!(!is_legal_transition(&State::Planning, &State::Reviewing));
+    }
+
+    /// A provider failure retries through Retrying and only then asks the
+    /// provider again (WaitingProvider -> Retrying -> WaitingProvider).
+    #[test]
+    fn provider_failure_retry_is_legal() {
+        assert!(is_legal_transition(
+            &State::WaitingProvider,
+            &State::Retrying
+        ));
+        assert!(is_legal_transition(
+            &State::Retrying,
+            &State::WaitingProvider
+        ));
     }
 }

@@ -21,11 +21,12 @@ impl<'a> Executor<'a> {
     /// Execute one parsed call. Never panics: refusals and failures come
     /// back as results for the reviewer to judge.
     pub fn execute(&self, call: ToolCallSpec) -> ToolResult {
-        let request = ToolRequest {
-            tool: call.tool,
-            target: call.target,
-            arguments: call.arguments,
-        };
-        self.registry.dispatch(&request)
+        self.execute_request(&call.into_request())
+    }
+
+    /// Execute an already-built request (used by the interactive
+    /// permission flow, which re-dispatches after a grant).
+    pub fn execute_request(&self, request: &ToolRequest) -> ToolResult {
+        self.registry.dispatch(request)
     }
 }

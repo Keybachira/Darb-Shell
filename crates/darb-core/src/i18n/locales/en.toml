@@ -1,31 +1,144 @@
+[app]
+ready = "Ready"
+busy = "The agent is busy — wait for it to finish"
+offline = "Remote AI unavailable — local tools still work"
+cancelling = "Cancelling…"
+profile = "Profile: {name}"
+tools = "tools: {count}"
+cwd = "directory: {path}"
+config_reloaded = "config reloaded"
+provider_unavailable = "note: remote AI unavailable ({reason}) — local tools still work"
+memory_unavailable = "memory unavailable ({reason}) — continuing without transcript"
+previous_session = "··· previous session ···"
+
 [agent]
 thinking = "Thinking..."
 planning = "Creating plan..."
-executing = "Executing..."
-completed = "Completed"
 waiting = "Waiting for the model..."
+executing = "Executing..."
 reviewing = "Reviewing..."
 retrying = "Retrying..."
+completed = "Completed"
 failed = "Failed"
 cancelled = "Cancelled"
+tool_requested = "{tool} › {target}"
+tool_failed = "{tool} failed"
+denied_by_user = "denied by user"
+error = "error: {message}"
 
 [permissions]
 ask = "Waiting for confirmation..."
+allowed = "allowed: {tool} › {target}"
+denied = "denied: {tool} › {target}"
 
 [file]
 created = "File created successfully"
-
-[review]
-passed = "Review passed"
+preview_title = "File: {path}"
+empty = "no file selected"
+open_error = "could not open {path}: {reason}"
 
 [chat]
 you = "You"
 darb = "Darb"
+placeholder = "Ask Darb to modify your project..."
+hint = "Enter send · Tab focus · Ctrl+K commands · Ctrl+C cancel"
 
-[app]
-ready = "Ready"
+[panel]
+explorer = "Project"
+context = "Context"
+chat = "Chat"
+files = "Files"
+changes = "Changes"
+terminal = "Terminal"
+git = "Git"
+tasks = "Tasks"
+empty = "—"
+
+[explorer]
+empty = "(empty)"
+parent = ".."
+
+[context]
+entries = "Entries: {count}"
+files = "Files: {count}"
+tokens = "Tokens: {tokens}"
+model = "Model: {model}"
+
+[palette]
+title = "Commands"
+hint = "↑↓ choose · Enter run · Esc close"
+no_match = "no matches"
+
+[cmd]
+toggle_explorer = "Toggle explorer"
+refresh_files = "Reload files"
+new_chat = "New chat"
+git_status = "Git status"
+show_diff = "Show changes (diff)"
+toggle_language = "Switch language (pt/en)"
+open_chat = "Go to Chat"
+open_files = "Go to Files"
+open_changes = "Go to Changes"
+open_terminal = "Go to Terminal"
+open_git = "Go to Git"
+open_tasks = "Go to Tasks"
+quit = "Quit"
+
+[diff]
+empty = "no changes"
+
+[git]
+empty = "no changes (clean tree)"
+
+[tasks]
+empty = "no tasks"
+
+[terminal]
+empty = "no commands in this session"
+hint = "Type a command and press Enter — it always goes through permissions"
+exit_code = "exit: {code}"
 
 [dialog]
 permission_title = "Permission required"
 allow = "allow"
 deny = "deny"
+tool = "Tool"
+target = "Target"
+
+[review]
+passed = "Review passed"
+
+[cli]
+version = "darb {version}"
+config_fallback = "darb: {reason} — using defaults"
+locale_fallback = "darb: {reason} — continuing with defaults"
+no_cwd = "darb: could not determine current directory: {reason}"
+no_runtime = "darb: could not start async runtime: {reason}"
+unknown_command = "unknown command '{command}'"
+usage = """
+usage:
+  darb            open the TUI
+  darb init       initialize .darb/ in this project
+  darb doctor     check the environment
+  darb version    print the version
+"""
+
+[doctor]
+title = "Darb Doctor"
+config = "Config"
+config_missing = "file not found: {path}"
+provider = "Provider"
+provider_unimplemented = "not implemented in this version"
+key_set = "key set"
+key_missing = "key missing — remote AI unavailable"
+project = "Project"
+initialized = "{path} initialized"
+not_initialized = "not initialized (run `darb init`) — still fully usable"
+tool_missing = "'{binary}' not found in PATH"
+all_passed = "All checks passed."
+failed = "{count} check(s) failed."
+
+[init]
+created = "initialized: {path}"
+exists = "already initialized: {path}"
+error = "darb init: {reason}"

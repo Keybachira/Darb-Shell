@@ -70,6 +70,8 @@ pub enum DenyReason {
     SudoBlocked,
     /// Unknown tools fail closed: refusing is safer than guessing.
     UnknownTool,
+    /// The user refused at the confirmation dialog.
+    DeniedByUser,
 }
 
 /// Structured refusal: what was blocked and why (Negócio §42).
@@ -157,20 +159,56 @@ fn is_sudo_command(command: &str) -> bool {
 
 pub struct PermissionManager {
     config: PermissionsConfig,
+    /// Single-use user confirmations, keyed `(tool, target)`. A grant turns
+    /// one `AskUser` into `Allowed` and is then consumed. Grants never
+    /// override `Denied`: policy denials, sudo, and unknown tools stay
+    /// refused — the dialog can only confirm what policy marks askable.
+    grants: std::sync::Mutex<std::collections::HashSet<(String, String)>>,
 }
 
 impl PermissionManager {
     pub fn new(config: PermissionsConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            grants: std::sync::Mutex::new(std::collections::HashSet::new()),
+        }
     }
 
     pub fn config(&self) -> &PermissionsConfig {
         &self.config
     }
 
-    /// Check a tool request against policy. Pure function: no I/O, no
-    /// global state, so the Agent, tools, and tests all see the same rules.
+    /// Record a one-time user confirmation for an exact tool + target.
+    pub fn grant_once(&self, tool: &str, target: &str) {
+        if let Ok(mut grants) = self.grants.lock() {
+            grants.insert((tool.to_string(), target.to_string()));
+        }
+    }
+
+    /// Check a tool request against policy. Pure rules plus consumed
+    /// grants: no I/O, no global state, so the Agent, tools, and tests
+    /// all see the same decision path — there is no bypass around this.
     pub fn check(&self, request: &ToolRequest) -> PermissionOutcome {
+        match self.evaluate(request) {
+            PermissionOutcome::AskUser(_) => {
+                let key = (request.tool.clone(), request.target.clone());
+                let granted = self
+                    .grants
+                    .lock()
+                    .map(|mut grants| grants.remove(&key))
+                    .unwrap_or(false);
+                if granted {
+                    PermissionOutcome::Allowed
+                } else {
+                    self.evaluate(request)
+                }
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// Policy evaluation without grant handling (single choke point above).
+    fn evaluate(&self, request: &ToolRequest) -> PermissionOutcome {
         let tool = request.tool.as_str();
 
         if is_shell_tool(tool) {
@@ -404,5 +442,42 @@ mod tests {
         assert!(manager
             .check(&ToolRequest::new("shell", "cargo check"))
             .is_allowed());
+    }
+
+    #[test]
+    fn grant_turns_one_ask_into_allow_then_expires() {
+        let manager = default_manager();
+        let request = ToolRequest::new("edit_file", "a.rs");
+        assert_eq!(
+            manager.check(&request),
+            PermissionOutcome::AskUser(AskReason::PolicyRequiresConfirmation)
+        );
+        manager.grant_once("edit_file", "a.rs");
+        assert!(manager.check(&request).is_allowed());
+        // Consumed: asks again.
+        assert_eq!(
+            manager.check(&request),
+            PermissionOutcome::AskUser(AskReason::PolicyRequiresConfirmation)
+        );
+    }
+
+    #[test]
+    fn grant_never_overrides_denials() {
+        let manager = default_manager();
+        manager.grant_once("git_push", "origin main");
+        manager.grant_once("shell", "sudo apt update");
+        manager.grant_once("format_disk", "/dev/sda");
+        assert!(matches!(
+            manager.check(&ToolRequest::new("git_push", "origin main")),
+            PermissionOutcome::Denied(_)
+        ));
+        assert!(matches!(
+            manager.check(&ToolRequest::new("shell", "sudo apt update")),
+            PermissionOutcome::Denied(_)
+        ));
+        assert!(matches!(
+            manager.check(&ToolRequest::new("format_disk", "/dev/sda")),
+            PermissionOutcome::Denied(_)
+        ));
     }
 }

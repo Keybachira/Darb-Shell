@@ -9,4 +9,4 @@ pub mod reviewer;
 pub mod state;
 pub mod tool_calling;
 
-pub use loop_::{Agent, FinalResult};
+pub use loop_::{Agent, FinalResult, PermissionResponder};

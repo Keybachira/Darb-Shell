@@ -2,10 +2,12 @@
 //!
 //! Character input is NOT an action: when [`Action::Ignore`] comes back
 //! with a `KeyCode::Char` (no modifiers), the app inserts the character
-//! into the input line — unless a modal dialog is open, which captures
-//! `a`/`d` as answers.
+//! into the input line — unless a modal dialog or the command palette is
+//! open, which capture keys themselves.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::app::Tab;
 
 /// What a key press means. Shortcuts follow Arquitetura §59.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +20,7 @@ pub enum Action {
     ScrollDown,
     ToggleExplorer,
     CommandPalette,
+    ShowTab(Tab),
     PermissionAllow,
     PermissionDeny,
     Ignore,
@@ -30,6 +33,9 @@ pub fn action_for(key: KeyEvent) -> Action {
             KeyCode::Char('c') | KeyCode::Char('C') => Action::CancelRequested,
             KeyCode::Char('b') | KeyCode::Char('B') => Action::ToggleExplorer,
             KeyCode::Char('k') | KeyCode::Char('K') => Action::CommandPalette,
+            KeyCode::Char('p') | KeyCode::Char('P') => Action::ShowTab(Tab::Files),
+            KeyCode::Char('g') | KeyCode::Char('G') => Action::ShowTab(Tab::Git),
+            KeyCode::Char('t') | KeyCode::Char('T') => Action::ShowTab(Tab::Terminal),
             _ => Action::Ignore,
         };
     }
@@ -72,6 +78,22 @@ mod tests {
         );
         assert_eq!(action_for(ctrl(KeyCode::Char('b'))), Action::ToggleExplorer);
         assert_eq!(action_for(ctrl(KeyCode::Char('k'))), Action::CommandPalette);
+    }
+
+    #[test]
+    fn ctrl_letters_open_tabs() {
+        assert_eq!(
+            action_for(ctrl(KeyCode::Char('p'))),
+            Action::ShowTab(Tab::Files)
+        );
+        assert_eq!(
+            action_for(ctrl(KeyCode::Char('g'))),
+            Action::ShowTab(Tab::Git)
+        );
+        assert_eq!(
+            action_for(ctrl(KeyCode::Char('t'))),
+            Action::ShowTab(Tab::Terminal)
+        );
     }
 
     #[test]

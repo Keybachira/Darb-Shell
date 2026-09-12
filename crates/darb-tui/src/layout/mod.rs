@@ -1,4 +1,5 @@
-//! Shell geometry: header / body / footer, and the three body columns.
+//! Shell geometry: header / body / tabs / footer, and the three body
+//! columns.
 //!
 //! Pure function of the terminal area — no widgets, no state — so the
 //! layout is unit-testable without a terminal.
@@ -12,6 +13,8 @@ pub struct ShellLayout {
     pub explorer: Rect,
     pub workspace: Rect,
     pub context: Rect,
+    /// One-line tab bar under the body (`Chat │ Files │ …`).
+    pub tabs: Rect,
     pub footer: Rect,
 }
 
@@ -23,6 +26,7 @@ pub fn shell_layout(area: Rect, explorer_visible: bool) -> ShellLayout {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(1),
+            Constraint::Length(1),
             Constraint::Length(3),
         ])
         .split(area);
@@ -48,7 +52,8 @@ pub fn shell_layout(area: Rect, explorer_visible: bool) -> ShellLayout {
         explorer,
         workspace,
         context,
-        footer: rows[2],
+        tabs: rows[2],
+        footer: rows[3],
     }
 }
 
@@ -70,6 +75,7 @@ mod tests {
         let area = Rect::new(0, 0, 100, 30);
         let layout = shell_layout(area, true);
         assert_eq!(layout.header.height, 3);
+        assert_eq!(layout.tabs.height, 1);
         assert_eq!(layout.footer.height, 3);
         // Columns tile the body row exactly.
         assert_eq!(layout.explorer.x, 0);
@@ -78,6 +84,10 @@ mod tests {
             100
         );
         assert_eq!(layout.workspace.y, layout.explorer.y);
+        // Rows tile the terminal area: nothing overlaps, nothing is lost.
+        assert_eq!(layout.tabs.y, layout.workspace.y + layout.workspace.height);
+        assert_eq!(layout.footer.y, layout.tabs.y + layout.tabs.height);
+        assert_eq!(layout.footer.y + layout.footer.height, 30);
     }
 
     #[test]

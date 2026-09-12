@@ -38,6 +38,10 @@ impl Locale {
 }
 
 /// Flatten `[section] key = value` into `"section.key" -> value`.
+///
+/// Strings are taken as parsed: going through `Value::to_string()` would
+/// re-escape them, so a translation containing a newline (the CLI usage
+/// text) or a quote would reach the UI with literal `\n` in it.
 fn flatten(table: &toml::Table, prefix: &str, out: &mut HashMap<String, String>) {
     for (key, value) in table {
         let full = if prefix.is_empty() {
@@ -47,8 +51,11 @@ fn flatten(table: &toml::Table, prefix: &str, out: &mut HashMap<String, String>)
         };
         match value {
             toml::Value::Table(inner) => flatten(inner, &full, out),
-            _ => {
-                out.insert(full, value.to_string().trim_matches('"').to_string());
+            toml::Value::String(text) => {
+                out.insert(full, text.clone());
+            }
+            other => {
+                out.insert(full, other.to_string());
             }
         }
     }
@@ -140,11 +147,38 @@ pub fn global_text(key: &str) -> String {
         .unwrap_or_else(|_| key.to_string())
 }
 
+/// Resolve a key, then fill `{name}` placeholders from `args`.
+///
+/// Unknown placeholders stay verbatim: a missing argument shows up as
+/// `{name}` in the UI instead of silently collapsing to an empty string,
+/// which is what makes a bad translation obvious (Contribuição §14).
+pub fn format_text(text: &str, args: &[(&str, &str)]) -> String {
+    let mut out = text.to_string();
+    for (name, value) in args {
+        out = out.replace(&format!("{{{name}}}"), value);
+    }
+    out
+}
+
+/// [`global_text`] + [`format_text`] for the current language.
+pub fn global_format(key: &str, args: &[(&str, &str)]) -> String {
+    format_text(&global_text(key), args)
+}
+
 /// `t!("agent.thinking")` → user-visible string in the current language.
+///
+/// Placeholders are filled with named arguments, so translators control
+/// word order: `t!("app.profile", name = "eco")`.
 #[macro_export]
 macro_rules! t {
     ($key:expr) => {
         $crate::i18n::global_text($key)
+    };
+    ($key:expr, $($name:ident = $value:expr),+ $(,)?) => {
+        $crate::i18n::global_format(
+            $key,
+            &[$( (stringify!($name), $value.to_string().as_str()) ),+],
+        )
     };
 }
 
@@ -165,11 +199,80 @@ mod tests {
         assert_eq!(i18n.text("agent.thinking"), "A pensar...");
     }
 
+    /// Build an instance from raw TOML, bypassing the embedded locales.
+    fn from_toml(pt: &str, en: &str, language: Locale) -> I18n {
+        I18n {
+            language,
+            pt: parse_locale_toml(pt, "pt").expect("pt must parse"),
+            en: parse_locale_toml(en, "en").expect("en must parse"),
+        }
+    }
+
     #[test]
     fn falls_back_to_en_when_pt_missing() {
-        // `review.passed` exists only in en.toml.
+        let i18n = from_toml(
+            "[a]\npt_only = \"PT\"",
+            "[a]\npt_only = \"PT\"\nen_only = \"EN\"",
+            Locale::Pt,
+        );
+        assert_eq!(i18n.text("a.en_only"), "EN");
+        assert_eq!(i18n.text("a.pt_only"), "PT");
+    }
+
+    /// Both shipped locales must define the same keys: the en fallback is
+    /// a safety net, not a place to park untranslated strings.
+    #[test]
+    fn shipped_locales_have_the_same_keys() {
         let i18n = I18n::new(Locale::Pt).expect("locales must parse");
-        assert_eq!(i18n.text("review.passed"), "Review passed");
+        let mut missing_in_pt: Vec<&str> = i18n
+            .en
+            .keys()
+            .filter(|key| !i18n.pt.contains_key(*key))
+            .map(String::as_str)
+            .collect();
+        let mut missing_in_en: Vec<&str> = i18n
+            .pt
+            .keys()
+            .filter(|key| !i18n.en.contains_key(*key))
+            .map(String::as_str)
+            .collect();
+        missing_in_pt.sort_unstable();
+        missing_in_en.sort_unstable();
+        assert!(
+            missing_in_pt.is_empty(),
+            "missing in pt.toml: {missing_in_pt:?}"
+        );
+        assert!(
+            missing_in_en.is_empty(),
+            "missing in en.toml: {missing_in_en:?}"
+        );
+    }
+
+    #[test]
+    fn multi_line_values_keep_their_newlines() {
+        let i18n = I18n::new(Locale::Pt).expect("locales must parse");
+        let usage = i18n.text("cli.usage");
+        assert!(usage.contains('\n'), "{usage:?}");
+        assert!(usage.contains("darb doctor"), "{usage:?}");
+    }
+
+    #[test]
+    fn placeholders_are_filled_and_unknown_ones_stay() {
+        assert_eq!(
+            format_text("Perfil: {name}", &[("name", "eco")]),
+            "Perfil: eco"
+        );
+        assert_eq!(format_text("a {x} b", &[]), "a {x} b");
+    }
+
+    #[test]
+    fn macro_fills_named_arguments() {
+        init_global(Locale::Pt).expect("init must succeed");
+        assert_eq!(crate::t!("app.profile", name = "eco"), "Perfil: eco");
+        assert_eq!(
+            crate::t!("agent.tool_failed", tool = "shell"),
+            "shell falhou"
+        );
     }
 
     #[test]
