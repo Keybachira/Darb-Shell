@@ -16,6 +16,14 @@ use crate::app::Tab;
 use crate::layout::centered_rect;
 use crate::theme::Theme;
 
+/// Popup geometry for `match_count` filtered commands, shared by the
+/// renderer and mouse hit-testing (Contribuição §10): clicks must hit the
+/// rows actually drawn, so both sides use this one function.
+pub fn popup_rect(area: Rect, match_count: usize) -> Rect {
+    let height = (match_count as u16 + 5).min(area.height).max(6);
+    centered_rect(area, 64, height)
+}
+
 /// What the user asked for. Deliberately tiny: every variant maps to one
 /// action `apps/darb` can perform without inventing new machinery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,8 +111,7 @@ impl Palette {
 /// Draw the palette centered over `area`.
 pub fn render_palette(frame: &mut Frame, area: Rect, palette: &Palette, theme: &Theme) {
     let matches = palette.filtered();
-    let height = (matches.len() as u16 + 5).min(area.height);
-    let popup = centered_rect(area, 64, height.max(6));
+    let popup = popup_rect(area, matches.len());
     frame.render_widget(Clear, popup);
 
     let header = Line::from(format!("> {}", palette.query));

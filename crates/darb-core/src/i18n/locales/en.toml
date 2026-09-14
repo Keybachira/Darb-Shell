@@ -9,6 +9,7 @@ cwd = "directory: {path}"
 config_reloaded = "config reloaded"
 provider_unavailable = "note: remote AI unavailable ({reason}) — local tools still work"
 memory_unavailable = "memory unavailable ({reason}) — continuing without transcript"
+mouse_unavailable = "mouse unavailable ({reason}) — continuing keyboard-only"
 previous_session = "··· previous session ···"
 
 [agent]

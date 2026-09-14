@@ -9,6 +9,7 @@ cwd = "directório: {path}"
 config_reloaded = "configuração recarregada"
 provider_unavailable = "nota: IA remota indisponível ({reason}) — as ferramentas locais continuam a funcionar"
 memory_unavailable = "memória indisponível ({reason}) — a continuar sem transcrição"
+mouse_unavailable = "rato indisponível ({reason}) — a continuar só com teclado"
 previous_session = "··· sessão anterior ···"
 
 [agent]

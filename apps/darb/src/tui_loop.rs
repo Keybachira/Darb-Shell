@@ -30,6 +30,7 @@ use darb_tools::registry::{ToolRegistry, ToolResult};
 use darb_tui::app::{render, App, FileEntry, Focus, KeyOutcome, MessageRole, Tab};
 use darb_tui::palette::Command;
 use darb_tui::theme::Theme;
+use ratatui::layout::Rect;
 use tokio::sync::{mpsc, oneshot};
 
 /// Config file lookup: `$DARB_CONFIG`, else `./configs/default.toml`
@@ -78,6 +79,13 @@ fn build_provider(config: &DarbConfig) -> Result<Box<dyn Provider>, String> {
             .map_err(|e| e.to_string()),
         other => Err(format!("provider '{other}' is not implemented yet")),
     }
+}
+
+/// One input event after filtering: a key, or a mouse event when capture
+/// is enabled. Everything else is dropped before it reaches the app.
+enum MouseOrKey {
+    Mouse(crossterm::event::MouseEvent),
+    Key(crossterm::event::KeyEvent),
 }
 
 /// Reply half of a pending confirmation. Display comes from the
@@ -431,6 +439,9 @@ pub fn run() -> i32 {
 
     let view_registry =
         ToolRegistry::new(PermissionManager::new(config.permissions.clone()), &root);
+    // Docs §32/§34: clickable when the terminal supports mouse. Read before
+    // `config` moves into `Ui`; capture enable below is config-driven.
+    let mouse_enabled = config.interface.mouse;
     let mut ui = Ui::new(App::new(), view_registry, config, model_label, language);
     for (role, text) in startup_lines {
         ui.app.push(role, text);
@@ -439,10 +450,29 @@ pub fn run() -> i32 {
     ui.refresh_git();
 
     let mut terminal = ratatui::init();
+    // Capture failure is not fatal — the keyboard keeps working.
+    if mouse_enabled {
+        if let Err(e) = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)
+        {
+            eprintln!(
+                "{}
+",
+                t!("app.mouse_unavailable", reason = e.to_string())
+            );
+        }
+    }
     let theme = Theme::default();
     let mut busy = false;
     let mut pending: Option<Pending> = None;
     let mut last_request: Option<(String, String)> = None;
+    // Terminal area for hit-testing. Falls back to an empty rect when the
+    // size query fails; `handle_mouse` then finds no region and ignores the
+    // click instead of acting on a wrong coordinate space.
+    let area = || {
+        ratatui::crossterm::terminal::size()
+            .map(|(width, height)| Rect::new(0, 0, width, height))
+            .unwrap_or_default()
+    };
 
     loop {
         // 1. Agent → UI: fold every queued event.
@@ -518,12 +548,23 @@ pub fn run() -> i32 {
         if !poll {
             continue;
         }
-        let key = match crossterm::event::read() {
-            Ok(crossterm::event::Event::Key(key)) => key,
-            Ok(_) => continue,
+        let event = match crossterm::event::read() {
+            Ok(crossterm::event::Event::Key(key)) => Some(MouseOrKey::Key(key)),
+            Ok(crossterm::event::Event::Mouse(mouse)) if mouse_enabled => {
+                Some(MouseOrKey::Mouse(mouse))
+            }
+            Ok(_) => None,
             Err(_) => break,
         };
-        match ui.app.handle_key(key) {
+        let outcome = match event {
+            Some(MouseOrKey::Key(key)) => ui.app.handle_key(key),
+            Some(MouseOrKey::Mouse(mouse)) => {
+                let area = area();
+                ui.app.handle_mouse(mouse, area)
+            }
+            None => continue,
+        };
+        match outcome {
             KeyOutcome::Quit => break,
             KeyOutcome::CancelRequested => {
                 if let Some(agent) = &agent {
@@ -584,6 +625,9 @@ pub fn run() -> i32 {
         }
     }
 
+    if mouse_enabled {
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    }
     ratatui::restore();
     0
 }

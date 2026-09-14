@@ -6,13 +6,15 @@
 //! it all. No provider, tool, or agent calls happen here — the panels are
 //! filled from the outside (`set_files`, `set_diff`, `push_terminal`, …).
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use darb_core::events::{AgentState, DarbEvent};
 use darb_core::i18n::{global_format, global_text};
+use ratatui::layout::Rect;
 use ratatui::Frame;
 
 use crate::keybindings::{action_for, Action};
-use crate::palette::{render_palette, Command, Palette};
+use crate::mouse;
+use crate::palette::{popup_rect, render_palette, Command, Palette};
 use crate::theme::Theme;
 
 /// One file row in the explorer. A presentation copy — `apps/darb` feeds
@@ -121,6 +123,17 @@ impl Tab {
         }
     }
 }
+
+/// Width of one translated tab label, exactly as the tab bar draws it.
+/// A function shared by the renderer and mouse hit-testing so clicks can
+/// never select a different tab than the one drawn under the cursor
+/// (Contribuição §10: no duplicated geometry).
+pub fn tab_label_width(tab: Tab) -> u16 {
+    global_text(tab.title_key()).chars().count() as u16
+}
+
+/// Width of the ` │ ` separator spans the tab bar renders between tabs.
+pub const TAB_SEPARATOR_WIDTH: u16 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyOutcome {
@@ -364,7 +377,9 @@ impl App {
         !self.current_dir.is_empty()
     }
 
-    fn explorer_rows(&self) -> usize {
+    /// Total explorer rows (including the `..` entry). Public so mouse
+    /// hit-testing clamps against the same count the renderer shows.
+    pub fn explorer_rows(&self) -> usize {
         self.files.len() + usize::from(self.has_parent_entry())
     }
 
@@ -466,16 +481,86 @@ impl App {
     }
 
     fn enter_explorer(&mut self) -> KeyOutcome {
-        if self.has_parent_entry() && self.explorer_index == 0 {
+        self.enter_explorer_at(self.explorer_index)
+    }
+
+    /// Open the explorer row `row` (same indexing as `explorer_index`).
+    /// Shared by the keyboard path and mouse clicks so both behave alike.
+    pub fn enter_explorer_at(&mut self, row: usize) -> KeyOutcome {
+        if self.has_parent_entry() && row == 0 {
             return KeyOutcome::GoUp;
         }
-        let row = self.explorer_index - usize::from(self.has_parent_entry());
-        match self.files.get(row) {
+        let index = row - usize::from(self.has_parent_entry());
+        match self.files.get(index) {
             Some(entry) => KeyOutcome::OpenEntry {
                 path: join_path(&self.current_dir, &entry.name),
                 is_dir: entry.is_dir,
             },
             None => KeyOutcome::Ignored,
+        }
+    }
+
+    /// Handle one mouse event (Arquitetura §32: "clicável quando o
+    /// terminal suportar mouse"). Left clicks map to the same
+    /// `KeyOutcome`s keys produce; the wheel scrolls the focused region,
+    /// mirroring ↑/↓. Overlays get the event first, exactly like
+    /// `handle_key`.
+    pub fn handle_mouse(&mut self, event: MouseEvent, area: Rect) -> KeyOutcome {
+        let click = mouse::Click {
+            x: event.column,
+            y: event.row,
+        };
+        match event.kind {
+            MouseEventKind::Up(MouseButton::Left) => {
+                if self.palette.is_some() {
+                    return self.handle_palette_click(click, area);
+                }
+                if self.permission.is_some() {
+                    // Fail-safe: only [a]/[d]/Esc answer a permission ask,
+                    // so no click can accidentally run a dangerous action
+                    // (Negócio §40: safety before convenience).
+                    return KeyOutcome::Ignored;
+                }
+                mouse::click_outcome(self, click, area)
+            }
+            MouseEventKind::ScrollUp => {
+                self.move_up();
+                KeyOutcome::Ignored
+            }
+            MouseEventKind::ScrollDown => {
+                self.move_down();
+                KeyOutcome::Ignored
+            }
+            // Drags, moves, other buttons: no meaning yet.
+            _ => KeyOutcome::Ignored,
+        }
+    }
+
+    /// Click inside the palette runs the command on that row (same as
+    /// Enter); a click outside the popup closes it, like Esc.
+    fn handle_palette_click(&mut self, click: mouse::Click, area: Rect) -> KeyOutcome {
+        let matches: Vec<(Command, &'static str)> = self
+            .palette
+            .as_ref()
+            .map(|palette| palette.filtered())
+            .unwrap_or_default();
+        let popup = popup_rect(area, matches.len());
+        let inside = click.x >= popup.x
+            && click.x < popup.x + popup.width
+            && click.y >= popup.y
+            && click.y < popup.y + popup.height;
+        if !inside {
+            self.palette = None;
+            return KeyOutcome::Ignored;
+        }
+        // Inner rows: 0 = query header, 1 = blank, 2.. = matches, so the
+        // first command sits three rows below the popup border.
+        let row = (click.y - popup.y - 3) as usize;
+        if click.y >= popup.y + 3 && row < matches.len() {
+            self.palette = None;
+            KeyOutcome::Command(matches[row].0)
+        } else {
+            KeyOutcome::Ignored
         }
     }
 
@@ -653,9 +738,9 @@ fn render_tab_bar(frame: &mut Frame, area: ratatui::layout::Rect, app: &App, the
     // be worse than hiding the hint (§16 language/layout safety).
     let labels_width: u16 = Tab::all()
         .iter()
-        .map(|tab| global_text(tab.title_key()).chars().count() as u16)
+        .map(|tab| tab_label_width(*tab))
         .sum::<u16>()
-        + 3 * (Tab::all().len() as u16 - 1);
+        + TAB_SEPARATOR_WIDTH * (Tab::all().len() as u16 - 1);
     let hint = global_text("chat.hint");
     let hint_width = hint.chars().count() as u16;
     let show_hint = area.width > labels_width + hint_width + 3;
