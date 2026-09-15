@@ -36,6 +36,9 @@ denied = "negado: {tool} › {target}"
 created = "Arquivo criado com sucesso"
 preview_title = "Ficheiro: {path}"
 empty = "sem ficheiro seleccionado"
+saved = "Ficheiro gravado: {path}"
+save_error = "não foi possível gravar {path}: {reason}"
+edit_hint = "Ctrl+E editar · Ctrl+S gravar · Esc sair"
 open_error = "não foi possível abrir {path}: {reason}"
 
 [chat]

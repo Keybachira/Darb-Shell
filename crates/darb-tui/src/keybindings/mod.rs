@@ -19,6 +19,10 @@ pub enum Action {
     ScrollUp,
     ScrollDown,
     ToggleExplorer,
+    ToggleTerminal,
+    ToggleContext,
+    ToggleEdit,
+    CycleMode,
     CommandPalette,
     ShowTab(Tab),
     PermissionAllow,
@@ -33,6 +37,15 @@ pub fn action_for(key: KeyEvent) -> Action {
             KeyCode::Char('c') | KeyCode::Char('C') => Action::CancelRequested,
             KeyCode::Char('b') | KeyCode::Char('B') => Action::ToggleExplorer,
             KeyCode::Char('k') | KeyCode::Char('K') => Action::CommandPalette,
+            // Bottom terminal (web: Ctrl+J) and right context panel
+            // (Arquitetura §59: Ctrl+L toggles the layout).
+            KeyCode::Char('j') | KeyCode::Char('J') => Action::ToggleTerminal,
+            KeyCode::Char('l') | KeyCode::Char('L') => Action::ToggleContext,
+            // Cycle agent mode. Ctrl+M is deliberately NOT used: Enter and
+            // Ctrl+M are indistinguishable over the wire (both CR).
+            KeyCode::Char('o') | KeyCode::Char('O') => Action::CycleMode,
+            // Edit mode for the Files tab buffer.
+            KeyCode::Char('e') | KeyCode::Char('E') => Action::ToggleEdit,
             KeyCode::Char('p') | KeyCode::Char('P') => Action::ShowTab(Tab::Files),
             KeyCode::Char('g') | KeyCode::Char('G') => Action::ShowTab(Tab::Git),
             KeyCode::Char('t') | KeyCode::Char('T') => Action::ShowTab(Tab::Terminal),
@@ -81,6 +94,12 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_j_and_l_toggle_panels() {
+        assert_eq!(action_for(ctrl(KeyCode::Char('j'))), Action::ToggleTerminal);
+        assert_eq!(action_for(ctrl(KeyCode::Char('l'))), Action::ToggleContext);
+    }
+
+    #[test]
     fn ctrl_letters_open_tabs() {
         assert_eq!(
             action_for(ctrl(KeyCode::Char('p'))),
@@ -90,10 +109,9 @@ mod tests {
             action_for(ctrl(KeyCode::Char('g'))),
             Action::ShowTab(Tab::Git)
         );
-        assert_eq!(
-            action_for(ctrl(KeyCode::Char('t'))),
-            Action::ShowTab(Tab::Terminal)
-        );
+        assert_eq!(action_for(ctrl(KeyCode::Char('l'))), Action::ToggleContext);
+        assert_eq!(action_for(ctrl(KeyCode::Char('o'))), Action::CycleMode);
+        assert_eq!(action_for(ctrl(KeyCode::Char('e'))), Action::ToggleEdit);
     }
 
     #[test]

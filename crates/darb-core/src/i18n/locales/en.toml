@@ -36,6 +36,9 @@ denied = "denied: {tool} › {target}"
 created = "File created successfully"
 preview_title = "File: {path}"
 empty = "no file selected"
+saved = "File saved: {path}"
+save_error = "could not save {path}: {reason}"
+edit_hint = "Ctrl+E edit · Ctrl+S save · Esc done"
 open_error = "could not open {path}: {reason}"
 
 [chat]

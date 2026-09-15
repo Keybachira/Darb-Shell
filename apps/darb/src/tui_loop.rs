@@ -107,12 +107,14 @@ impl PermissionResponder for UiResponder {
     }
 }
 
-/// Confirmation the user is currently answering. Keeping both cases in one
-/// slot is what lets a single dialog serve the agent and the terminal tab
-/// without either gaining a way around the permission manager.
+/// Confirmation the user is currently answering. Keeping every case in
+/// one slot is what lets a single dialog serve the agent, the terminal
+/// tab and the file editor without any of them gaining a way around the
+/// permission manager.
 enum Pending {
     Agent(oneshot::Sender<bool>),
     Direct(ToolRequest),
+    Save(ToolRequest),
 }
 
 /// Presentation state plus the read-only sources that fill it. Grouping
@@ -256,6 +258,48 @@ impl Ui {
         }
         self.report_terminal(&request, &result);
         None
+    }
+
+    /// Save the Files-tab buffer through `edit_file` (old = snapshot at
+    /// open, so an external edit fails the match instead of being
+    /// overwritten). Ask-gated exactly like the terminal path.
+    fn run_save(&mut self, request: ToolRequest) -> Option<Pending> {
+        let result = self.registry.dispatch(&request);
+        if result.metadata.get("permission").map(String::as_str) == Some("ask") {
+            self.app.ask_permission(&request.tool, &request.target);
+            return Some(Pending::Save(request));
+        }
+        self.report_save(&request, &result);
+        None
+    }
+
+    /// Surface the save in the chat: refresh the snapshot on success so
+    /// the next save diffs against what is on disk, or explain the
+    /// failure where the user asked to look (Negócio §42).
+    fn report_save(&mut self, request: &ToolRequest, result: &ToolResult) {
+        if result.success {
+            let content = request.arguments.get("new").cloned().unwrap_or_default();
+            self.app.confirm_saved(content);
+            self.app.push(
+                MessageRole::System,
+                format!(
+                    "✓ {}",
+                    global_format("file.saved", &[("path", &request.target)])
+                ),
+            );
+        } else {
+            let reason = result.error.clone().unwrap_or_default();
+            self.app.push(
+                MessageRole::System,
+                format!(
+                    "⚠ {}",
+                    global_format(
+                        "file.save_error",
+                        &[("path", &request.target), ("reason", &reason)]
+                    )
+                ),
+            );
+        }
     }
 
     /// Echo the command and its captured output into the terminal panel.
@@ -609,6 +653,21 @@ pub fn run() -> i32 {
                         ui.app.push_terminal(denied);
                     }
                 }
+                Some(Pending::Save(request)) => {
+                    if allowed {
+                        ui.registry.grant_once(&request.tool, &request.target);
+                        pending = ui.run_save(request);
+                    } else {
+                        let denied = global_format(
+                            "permissions.denied",
+                            &[
+                                ("tool", request.tool.as_str()),
+                                ("target", request.target.as_str()),
+                            ],
+                        );
+                        ui.app.push(MessageRole::System, format!("⌀ {denied}"));
+                    }
+                }
                 None => {}
             },
             KeyOutcome::Command(command) => {
@@ -621,6 +680,16 @@ pub fn run() -> i32 {
             KeyOutcome::TerminalCommand(line) => {
                 pending = ui.run_terminal(ToolRequest::new("shell", line));
             }
+            KeyOutcome::SaveFile {
+                path,
+                original,
+                content,
+            } => {
+                let request = ToolRequest::new("edit_file", path)
+                    .with_arg("old", original)
+                    .with_arg("new", content);
+                pending = ui.run_save(request);
+            }
             KeyOutcome::Ignored => {}
         }
     }
@@ -630,4 +699,98 @@ pub fn run() -> i32 {
     }
     ratatui::restore();
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use darb_core::config::{PermissionDecision, PermissionsConfig};
+
+    fn temp_root(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("darb-save-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp root");
+        dir
+    }
+
+    fn ui_with_edit(root: &std::path::Path, decision: PermissionDecision) -> Ui {
+        let config = DarbConfig::default();
+        let registry = ToolRegistry::new(
+            PermissionManager::new(PermissionsConfig {
+                read: PermissionDecision::Allow,
+                edit: decision,
+                shell: PermissionDecision::Allow,
+                delete: PermissionDecision::Deny,
+                git_push: PermissionDecision::Deny,
+            }),
+            root,
+        );
+        Ui::new(
+            App::new(),
+            registry,
+            config,
+            "test-model".to_string(),
+            Locale::En,
+        )
+    }
+
+    /// Type one char through the real App path, then build the request
+    /// exactly like the `SaveFile` arm does.
+    fn save_request(ui: &mut Ui) -> ToolRequest {
+        ui.app.set_tab(Tab::Files);
+        ui.app.toggle_edit();
+        ui.app.edit_insert('X');
+        let (path, original, content) = ui.app.take_save().expect("dirty buffer");
+        ToolRequest::new("edit_file", path)
+            .with_arg("old", original)
+            .with_arg("new", content)
+    }
+
+    #[test]
+    fn save_round_trip_writes_the_buffer_to_disk() {
+        let root = temp_root("round-trip");
+        std::fs::write(root.join("a.txt"), "ab\ncd\n").expect("write");
+        let mut ui = ui_with_edit(&root, PermissionDecision::Allow);
+        ui.app
+            .set_file_preview("a.txt".to_string(), "ab\ncd\n".to_string());
+
+        let request = save_request(&mut ui);
+        let pending = ui.run_save(request);
+        assert!(pending.is_none(), "allowed edits save without asking");
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).expect("read"),
+            "Xab\ncd\n"
+        );
+        assert!(!ui.app.edit_dirty, "snapshot refreshed after save");
+        assert!(ui.app.take_save().is_none());
+        assert!(
+            ui.app.messages.iter().any(|m| m.text.contains("a.txt")),
+            "success is reported where the user asked to look"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn save_under_ask_policy_waits_for_the_dialog() {
+        let root = temp_root("ask-policy");
+        std::fs::write(root.join("a.txt"), "ab\ncd\n").expect("write");
+        let mut ui = ui_with_edit(&root, PermissionDecision::Ask);
+        ui.app
+            .set_file_preview("a.txt".to_string(), "ab\ncd\n".to_string());
+
+        let request = save_request(&mut ui);
+        let pending = ui.run_save(request);
+        assert!(
+            matches!(pending, Some(Pending::Save(_))),
+            "ask-gated save must not touch the disk yet"
+        );
+        assert!(ui.app.permission.is_some());
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).expect("read"),
+            "ab\ncd\n",
+            "file untouched until the user allows"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

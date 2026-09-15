@@ -91,6 +91,34 @@ mod tests {
     }
 
     #[test]
+    fn whole_file_replace_powers_editor_saves() {
+        // The TUI saves by replacing the open snapshot (old) with the
+        // buffer (new): the whole content matches exactly once, so the
+        // exact-match rule doubles as a stale-context guard.
+        let (root, target) = fixture("ab\ncd\n");
+        let bytes = edit_file(&root, &target, "ab\ncd\n", "Xab\ncd\n").expect("edit");
+        assert!(bytes > 0);
+        assert_eq!(
+            std::fs::read_to_string(root.join(&target)).expect("read"),
+            "Xab\ncd\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stale_snapshot_fails_instead_of_overwriting() {
+        let (root, target) = fixture("ab\ncd\n");
+        // Someone else changed the file after the snapshot was taken.
+        std::fs::write(root.join(&target), "ab\nCHANGED\n").expect("write");
+        assert!(edit_file(&root, &target, "ab\ncd\n", "Xab\ncd\n").is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join(&target)).expect("read"),
+            "ab\nCHANGED\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn missing_old_text_fails() {
         let (root, target) = fixture("hello\n");
         assert!(edit_file(&root, &target, "bye", "x").is_err());

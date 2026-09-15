@@ -54,7 +54,7 @@ pub fn render_chat(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(
         Paragraph::new(lines)
             .block(widgets::panel(
-                global_text("panel.chat"),
+                format!("{} [{}]", global_text("panel.chat"), app.agent_mode.name()),
                 app.workspace_focused(),
                 theme,
             ))

@@ -10,7 +10,7 @@
 
 use ratatui::layout::Rect;
 
-use crate::app::{App, Focus, KeyOutcome, Tab};
+use crate::app::{task_at_row, App, Focus, KeyOutcome, Tab};
 use crate::layout::shell_layout;
 
 /// Where the user clicked. Pure input: no app state is needed to build it,
@@ -26,8 +26,10 @@ pub struct Click {
 pub enum MouseRegion {
     Explorer,
     Workspace,
+    Terminal,
     Context,
     TabBar,
+    StatusBar,
     Footer,
     Header,
 }
@@ -36,18 +38,29 @@ impl Click {
     /// Which shell region contains this click. Pure lookup on the same
     /// layout `render` uses, so the two can never disagree.
     pub fn region(&self, app: &App, area: Rect) -> MouseRegion {
-        let layout = shell_layout(area, app.explorer_visible);
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
         if pos_in(self.x, self.y, layout.header) {
             return MouseRegion::Header;
         }
         if pos_in(self.x, self.y, layout.tabs) {
             return MouseRegion::TabBar;
         }
+        if pos_in(self.x, self.y, layout.statusbar) {
+            return MouseRegion::StatusBar;
+        }
         if pos_in(self.x, self.y, layout.footer) {
             return MouseRegion::Footer;
         }
         if pos_in(self.x, self.y, layout.explorer) {
             return MouseRegion::Explorer;
+        }
+        if pos_in(self.x, self.y, layout.terminal) {
+            return MouseRegion::Terminal;
         }
         if pos_in(self.x, self.y, layout.workspace) {
             return MouseRegion::Workspace;
@@ -61,7 +74,12 @@ impl Click {
     /// A click on a tab bar cell selects that tab. Columns follow
     /// `render_tab_bar`: labels with ` │ ` separators, then the hint.
     pub fn tab_at(&self, app: &App, area: Rect) -> Option<Tab> {
-        let layout = shell_layout(area, app.explorer_visible);
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
         if !pos_in(self.x, self.y, layout.tabs) {
             return None;
         }
@@ -79,10 +97,39 @@ impl Click {
         None
     }
 
+    /// Tasks-list row under the click, or `None` outside the list or on
+    /// another tab. Rows count expanded detail lines exactly like the
+    /// renderer does, via [`task_at_row`].
+    pub fn task_row(&self, app: &App, area: Rect) -> Option<usize> {
+        if app.tab != Tab::Tasks {
+            return None;
+        }
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
+        if !pos_in(self.x, self.y, layout.workspace) {
+            return None;
+        }
+        // Inside the block border: row 0 is the title, steps start at 1.
+        let inner_top = layout.workspace.y + 1;
+        if self.y < inner_top {
+            return None;
+        }
+        task_at_row(&app.tasks, (self.y - inner_top) as usize)
+    }
+
     /// Explorer row under the click, or `None` outside the list. The row
     /// index counts the `..` entry exactly like `explorer_index` does.
     pub fn explorer_row(&self, app: &App, area: Rect) -> Option<usize> {
-        let layout = shell_layout(area, app.explorer_visible);
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
         if !pos_in(self.x, self.y, layout.explorer) {
             return None;
         }
@@ -141,15 +188,30 @@ pub fn click_outcome(app: &mut App, click: Click, area: Rect) -> KeyOutcome {
         }
         MouseRegion::Workspace => {
             app.focus = Focus::Workspace;
+            // Tasks tab: a click moves the cursor and expands the step
+            // under it (web reference: "click step to expand").
+            if app.tab == Tab::Tasks {
+                if let Some(index) = click.task_row(app, area) {
+                    app.tasks_index = index;
+                    return app.toggle_task();
+                }
+            }
+            KeyOutcome::Ignored
+        }
+        // The mini terminal shares the workspace focus: typing still goes
+        // to the command line and Enter follows the active tab's rule, so
+        // clicking it must not invent a new input path.
+        MouseRegion::Terminal => {
+            app.focus = Focus::Workspace;
             KeyOutcome::Ignored
         }
         MouseRegion::Footer => {
             app.focus = Focus::Input;
             KeyOutcome::Ignored
         }
-        // Header and context panel carry no actions; clicks there do not
-        // steal focus from what the user was doing.
-        MouseRegion::Header | MouseRegion::Context => KeyOutcome::Ignored,
+        // Header, status bar and context panel carry no actions; clicks
+        // there do not steal focus from what the user was doing.
+        MouseRegion::Header | MouseRegion::StatusBar | MouseRegion::Context => KeyOutcome::Ignored,
     }
 }
 
@@ -200,7 +262,12 @@ mod tests {
     fn click_on_each_tab_selects_it() {
         let area = Rect::new(0, 0, 110, 34);
         let mut app = App::new();
-        let layout = shell_layout(area, app.explorer_visible);
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
         let mut cursor = layout.tabs.x;
         for tab in Tab::all() {
             let click = Click {
@@ -219,7 +286,12 @@ mod tests {
     fn click_on_separator_selects_nothing() {
         let area = Rect::new(0, 0, 110, 34);
         let mut app = App::new();
-        let layout = shell_layout(area, app.explorer_visible);
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
         let first_width = tab_label_width(Tab::Chat);
         let click = Click {
             x: layout.tabs.x + first_width + 1, // middle of ` │ `
@@ -248,7 +320,12 @@ mod tests {
                 is_dir: false,
             },
         ]);
-        let layout = shell_layout(area, app.explorer_visible);
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
         // Row 0 is `..` (we are below the root), so `core` is row 1.
         let click = Click {
             x: layout.explorer.x + 2,
@@ -274,7 +351,12 @@ mod tests {
             name: "a.txt".to_string(),
             is_dir: false,
         }]);
-        let layout = shell_layout(area, app.explorer_visible);
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
         // Row 0 = a.txt; click two rows further down.
         let click = Click {
             x: layout.explorer.x + 1,
@@ -292,7 +374,12 @@ mod tests {
     fn click_footer_focuses_input_click_workspace_focuses_workspace() {
         let area = Rect::new(0, 0, 110, 34);
         let mut app = App::new();
-        let layout = shell_layout(area, app.explorer_visible);
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
         assert!(matches!(
             click_outcome(
                 &mut app,
@@ -324,7 +411,12 @@ mod tests {
         let area = Rect::new(0, 0, 110, 34);
         let mut app = App::new();
         app.focus = Focus::Input;
-        let layout = shell_layout(area, app.explorer_visible);
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
         let _ = click_outcome(
             &mut app,
             Click {
@@ -352,5 +444,116 @@ mod tests {
         app.explorer_visible = false;
         let click = Click { x: 2, y: 10 };
         assert_eq!(click.region(&app, area), MouseRegion::Workspace);
+    }
+
+    #[test]
+    fn region_detection_respects_hidden_context() {
+        let area = Rect::new(0, 0, 110, 34);
+        let mut app = App::new();
+        app.context_visible = false;
+        // Far right used to be the context panel; now it is workspace.
+        let click = Click { x: 105, y: 10 };
+        assert_eq!(click.region(&app, area), MouseRegion::Workspace);
+    }
+
+    #[test]
+    fn click_on_terminal_focuses_workspace() {
+        let area = Rect::new(0, 0, 110, 34);
+        let mut app = App::new();
+        app.focus = Focus::Input;
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
+        let outcome = click_outcome(
+            &mut app,
+            Click {
+                x: layout.terminal.x + 2,
+                y: layout.terminal.y + 1,
+            },
+            area,
+        );
+        assert!(matches!(outcome, KeyOutcome::Ignored));
+        assert_eq!(app.focus, Focus::Workspace);
+    }
+
+    #[test]
+    fn statusbar_click_is_detected_and_ignored() {
+        let area = Rect::new(0, 0, 110, 34);
+        let mut app = App::new();
+        app.focus = Focus::Explorer;
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
+        let click = Click {
+            x: layout.statusbar.x + 2,
+            y: layout.statusbar.y,
+        };
+        assert_eq!(click.region(&app, area), MouseRegion::StatusBar);
+        let _ = click_outcome(&mut app, click, area);
+        assert_eq!(app.focus, Focus::Explorer);
+    }
+
+    #[test]
+    fn click_on_task_row_moves_cursor_and_expands() {
+        use crate::app::TaskState;
+        use darb_core::events::DarbEvent;
+
+        let area = Rect::new(0, 0, 110, 34);
+        let mut app = App::new();
+        app.apply_event(&DarbEvent::AgentStarted {
+            task: "fix login".to_string(),
+        });
+        for target in ["a.rs", "b.rs"] {
+            app.apply_event(&DarbEvent::ToolRequested {
+                tool: "read_file".to_string(),
+                target: target.to_string(),
+            });
+        }
+        app.set_tab(Tab::Tasks);
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
+        // Step 1 is the second visual row (title row + step 0).
+        let outcome = click_outcome(
+            &mut app,
+            Click {
+                x: layout.workspace.x + 2,
+                y: layout.workspace.y + 2,
+            },
+            area,
+        );
+        assert!(matches!(outcome, KeyOutcome::Ignored));
+        assert_eq!(app.focus, Focus::Workspace);
+        assert_eq!(app.tasks_index, 1);
+        assert!(app.tasks[1].expanded);
+        assert!(!app.tasks[0].expanded);
+        assert!(matches!(app.tasks[1].state, TaskState::Pending));
+    }
+
+    #[test]
+    fn task_row_is_none_outside_the_tasks_tab() {
+        let area = Rect::new(0, 0, 110, 34);
+        let app = App::new();
+        assert_eq!(app.tab, Tab::Chat);
+        let layout = shell_layout(
+            area,
+            app.explorer_visible,
+            app.context_visible,
+            app.bottom_open,
+        );
+        let click = Click {
+            x: layout.workspace.x + 2,
+            y: layout.workspace.y + 1,
+        };
+        assert_eq!(click.task_row(&app, area), None);
     }
 }
