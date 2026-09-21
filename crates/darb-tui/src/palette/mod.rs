@@ -29,6 +29,9 @@ pub fn popup_rect(area: Rect, match_count: usize) -> Rect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     ToggleExplorer,
+    ToggleTerminal,
+    ToggleContext,
+    CycleMode,
     RefreshFiles,
     RefreshGit,
     ShowDiff,
@@ -51,6 +54,9 @@ pub const COMMANDS: &[(Command, &str)] = &[
     (Command::ShowDiff, "cmd.show_diff"),
     (Command::NewChat, "cmd.new_chat"),
     (Command::ToggleExplorer, "cmd.toggle_explorer"),
+    (Command::ToggleTerminal, "cmd.toggle_terminal"),
+    (Command::ToggleContext, "cmd.toggle_context"),
+    (Command::CycleMode, "cmd.cycle_mode"),
     (Command::ToggleLanguage, "cmd.toggle_language"),
     (Command::Quit, "cmd.quit"),
 ];

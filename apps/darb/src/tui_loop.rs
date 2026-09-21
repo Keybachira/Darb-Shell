@@ -14,7 +14,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use darb_agent::{Agent, PermissionResponder};
 use darb_core::config::DarbConfig;
@@ -27,10 +27,11 @@ use darb_memory::storage::MemoryDb;
 use darb_providers::interface::Provider;
 use darb_providers::openai::OpenAIAdapter;
 use darb_tools::registry::{ToolRegistry, ToolResult};
-use darb_tui::app::{render, App, FileEntry, Focus, KeyOutcome, MessageRole, Tab};
+use darb_tui::app::{render, App, FileEntry, Focus, KeyOutcome, MessageRole, ToastKind, Tab};
 use darb_tui::palette::Command;
 use darb_tui::theme::Theme;
 use ratatui::layout::Rect;
+use sysinfo::System;
 use tokio::sync::{mpsc, oneshot};
 
 /// Config file lookup: `$DARB_CONFIG`, else `./configs/default.toml`
@@ -127,6 +128,10 @@ struct Ui {
     model_label: String,
     language: Locale,
     tool_count: u32,
+    /// Throttled system telemetry (`sysinfo`). `None` when the refresh
+    /// fails — the panels then simply show no gauges.
+    sys: Option<System>,
+    sys_refresh: Option<Instant>,
 }
 
 impl Ui {
@@ -144,22 +149,77 @@ impl Ui {
             model_label,
             language,
             tool_count: 0,
+            sys: None,
+            sys_refresh: None,
         }
     }
 
-    /// Context panel lines. Only numbers we actually have: no invented
-    /// token counts (Contribuição §41). "Entries" counts what the open
-    /// directory holds — the agent's own context budget is not visible
-    /// here, so it is not claimed either.
-    fn refresh_context(&mut self) {
-        let count = self.app.files.len().to_string();
-        let tools = self.tool_count.to_string();
-        self.app.set_context(vec![
-            global_format("context.entries", &[("count", &count)]),
-            global_format("context.model", &[("model", &self.model_label)]),
-            global_format("app.profile", &[("name", &self.config.performance.profile)]),
-            global_format("app.tools", &[("count", &tools)]),
-        ]);
+    /// Refresh the CPU/RAM snapshot at most every ~2s (performance
+    /// budget: telemetry must never drive the loop). First call seeds
+    /// the sysinfo baseline (its first read is always ~0).
+    fn refresh_system(&mut self) {
+        let now = Instant::now();
+        if self.sys_refresh.is_some_and(|last| now.duration_since(last) < Duration::from_secs(2))
+        {
+            return;
+        }
+        self.sys_refresh = Some(now);
+        let sys = self.sys.get_or_insert_with(System::new);
+        sys.refresh_cpu_usage();
+        sys.refresh_memory();
+        self.app.cpu_percent = sys.global_cpu_usage();
+        let total = sys.total_memory();
+        let used = sys.used_memory();
+        if total > 0 {
+            self.app.mem_percent = (used as f32 / total as f32) * 100.0;
+            self.app.mem_used = format_bytes(used);
+            self.app.mem_total = format_bytes(total);
+        }
+    }
+
+    /// Parse the porcelain git status into branch + change counts and
+    /// mirror them into the app (header/status/context all reuse it).
+    /// The first line is `## branch…`; the rest are `XY path` / `?? path`.
+    fn apply_git(&mut self, output: &str) {
+        let mut lines = output.lines();
+        let head = lines.next().unwrap_or("");
+        self.app.git_branch = head
+            .strip_prefix("## ")
+            .map(|branch| {
+                branch
+                    .split('[')
+                    .next()
+                    .unwrap_or(branch)
+                    .trim()
+                    .to_string()
+            })
+            .unwrap_or_default();
+        let mut staged = 0usize;
+        let mut changes = 0usize;
+        let mut untracked = 0usize;
+        for line in lines {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("?? ") {
+                if !rest.is_empty() {
+                    untracked += 1;
+                }
+            } else {
+                let codes = line.as_bytes();
+                if codes.len() >= 2 {
+                    if codes[0] != b' ' {
+                        staged += 1;
+                    }
+                    if codes[1] != b' ' {
+                        changes += 1;
+                    }
+                }
+            }
+        }
+        self.app.git_staged = staged;
+        self.app.git_changes = changes;
+        self.app.git_untracked = untracked;
     }
 
     /// Re-list the current directory through the read-only view registry
@@ -185,7 +245,6 @@ impl Ui {
             })
             .collect();
         self.app.set_files(files);
-        self.refresh_context();
     }
 
     /// Show the repository status in the Git panel. A failure (no
@@ -194,8 +253,13 @@ impl Ui {
     fn refresh_git(&mut self) {
         let result = self.registry.dispatch(&ToolRequest::new("git_status", ""));
         if result.success {
+            self.apply_git(&result.output);
             self.app.set_git(&result.output);
         } else {
+            self.app.git_branch.clear();
+            self.app.git_staged = 0;
+            self.app.git_changes = 0;
+            self.app.git_untracked = 0;
             self.app.set_git(result.error.as_deref().unwrap_or(""));
         }
     }
@@ -327,6 +391,9 @@ impl Ui {
         match command {
             Command::Quit => return true,
             Command::ToggleExplorer => self.app.toggle_explorer(),
+            Command::ToggleTerminal => self.app.toggle_bottom(),
+            Command::ToggleContext => self.app.toggle_context(),
+            Command::CycleMode => self.app.cycle_mode(),
             Command::RefreshFiles => self.refresh_files(),
             Command::RefreshGit => {
                 self.refresh_git();
@@ -349,10 +416,15 @@ impl Ui {
                     Locale::En => Locale::Pt,
                 };
                 set_language(self.language);
+                self.app.language = self.language.as_str().to_string();
                 // The globe plus the language tag is language-neutral: no
                 // string has to be translated to announce the change.
                 self.app.push(
                     MessageRole::System,
+                    format!("🌐 {}", self.language.as_str()),
+                );
+                self.app.toast(
+                    ToastKind::Info,
                     format!("🌐 {}", self.language.as_str()),
                 );
             }
@@ -487,11 +559,23 @@ pub fn run() -> i32 {
     // `config` moves into `Ui`; capture enable below is config-driven.
     let mouse_enabled = config.interface.mouse;
     let mut ui = Ui::new(App::new(), view_registry, config, model_label, language);
+    ui.app.ai_online = agent.is_some();
+    ui.app.model_label = ui.model_label.clone();
+    ui.app.profile = ui.config.performance.profile.clone();
+    ui.app.language = language.as_str().to_string();
+    ui.app.project_name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| root.to_string_lossy().into_owned());
+    ui.app.user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_default();
     for (role, text) in startup_lines {
         ui.app.push(role, text);
     }
     ui.refresh_files();
     ui.refresh_git();
+    ui.refresh_system();
 
     let mut terminal = ratatui::init();
     // Capture failure is not fatal — the keyboard keeps working.
@@ -533,6 +617,7 @@ pub fn run() -> i32 {
                         }
                         DarbEvent::ToolCompleted { tool, success } => {
                             ui.tool_count += 1;
+                            ui.app.tool_calls = ui.tool_count;
                             if let (Some(memory), Some((_, target))) = (&memory, &last_request) {
                                 // Same tool name the event carries; the target
                                 // is the last one requested (one agent at a
@@ -576,7 +661,9 @@ pub fn run() -> i32 {
             pending = Some(Pending::Agent(reply));
         }
 
-        // 3. Draw.
+        // 3. System snapshot (throttled internally to ~2s) and draw.
+        ui.refresh_system();
+        ui.app.expire_old();
         if terminal
             .draw(|frame| render(frame, &ui.app, &theme))
             .is_err()
@@ -701,10 +788,48 @@ pub fn run() -> i32 {
     0
 }
 
+/// Human byte count for the system panel: `512 B`, `2.0 GB`.
+fn format_bytes(value: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = value as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", value as u64, UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use darb_core::config::{PermissionDecision, PermissionsConfig};
+
+    #[test]
+    fn bytes_format_is_human() {
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(2048), "2.0 KB");
+        assert_eq!(format_bytes(17_179_869_184), "16.0 GB");
+    }
+
+    #[test]
+    fn git_counts_are_parsed_from_porcelain() {
+        let mut ui = ui_with_edit(
+            &std::env::temp_dir(),
+            darb_core::config::PermissionDecision::Allow,
+        );
+        ui.apply_git(
+            "## main\n M src/a.rs\nM  src/b.rs\n?? new.txt\n D gone.rs",
+        );
+        assert_eq!(ui.app.git_branch, "main");
+        assert_eq!(ui.app.git_staged, 1);
+        assert_eq!(ui.app.git_changes, 2);
+        assert_eq!(ui.app.git_untracked, 1);
+    }
 
     fn temp_root(name: &str) -> PathBuf {
         let dir =

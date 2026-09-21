@@ -10,7 +10,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::App;
+use crate::app::{scroll_top, App};
 use crate::theme::Theme;
 use crate::widgets;
 
@@ -23,6 +23,7 @@ pub fn render_diff(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             .map(|line| diff_line(line, theme))
             .collect()
     };
+    let top = scroll_top(lines.len(), area.height.saturating_sub(2), app.scroll);
     frame.render_widget(
         Paragraph::new(lines)
             .block(widgets::panel(
@@ -30,7 +31,7 @@ pub fn render_diff(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 app.workspace_focused(),
                 theme,
             ))
-            .scroll((app.scroll, 0)),
+            .scroll((top, 0)),
         area,
     );
 }

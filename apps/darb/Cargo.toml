@@ -22,3 +22,4 @@ tokio.workspace = true
 anyhow.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
+sysinfo.workspace = true

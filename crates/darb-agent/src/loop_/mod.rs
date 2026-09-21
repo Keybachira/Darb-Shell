@@ -59,6 +59,10 @@ struct RunStats {
     changed_files: Vec<String>,
     warnings: Vec<String>,
     last_text: String,
+    /// Last response usage (prompt + completion). Every request of a run
+    /// carries the full conversation context, so this is a *current*
+    /// level, not a running total.
+    usage: darb_providers::interface::TokenUsage,
 }
 
 pub struct Agent {
@@ -215,6 +219,13 @@ impl Agent {
                 }
             };
             stats.last_text = response.text.clone();
+            if response.usage.total() > 0 {
+                stats.usage = response.usage;
+                self.events.emit(DarbEvent::TokensObserved {
+                    prompt: response.usage.prompt_tokens,
+                    completion: response.usage.completion_tokens,
+                })?;
+            }
 
             let calls = crate::tool_calling::extract_tool_calls(&response.text);
             if calls.is_empty() {

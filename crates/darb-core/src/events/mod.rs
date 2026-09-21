@@ -73,6 +73,16 @@ pub enum DarbEvent {
     ProviderDelta {
         text: String,
     },
+    /// Real token usage reported by the provider after one response
+    /// (stream `Done` or `complete`). Measured, never estimated: the TUI
+    /// only shows what actually arrived (Contribuição §41). Every response
+    /// of a run carries the full context, so the UI shows the *last*
+    /// request size, not a sum (which would double-count the same
+    /// context).
+    TokensObserved {
+        prompt: u64,
+        completion: u64,
+    },
 }
 
 /// Default channel capacity: large enough for an agent burst

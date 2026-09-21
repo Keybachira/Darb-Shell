@@ -114,8 +114,9 @@ pub fn render_preview(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     );
 }
 
-/// First buffer row to show: the manual scroll offset out of edit mode,
-/// a cursor-following window in edit mode (biased to keep context above
+/// First buffer row to show: the manual top offset (`App::scroll`, which
+/// the preview counts from the first line) out of edit mode, a
+/// cursor-following window in edit mode (biased to keep context above
 /// it — roughly one third of the window).
 fn cursor_top(app: &App, visible: usize) -> usize {
     if !app.editing {

@@ -4,7 +4,10 @@ busy = "O agente está ocupado — aguarda que termine"
 offline = "IA remota indisponível — as ferramentas locais continuam a funcionar"
 cancelling = "A cancelar…"
 profile = "Perfil: {name}"
+profile_key = "perfil"
 tools = "ferramentas: {count}"
+tools_key = "ferramentas"
+state_key = "estado"
 cwd = "directório: {path}"
 config_reloaded = "configuração recarregada"
 provider_unavailable = "nota: IA remota indisponível ({reason}) — as ferramentas locais continuam a funcionar"
@@ -56,6 +59,7 @@ changes = "Alterações"
 terminal = "Terminal"
 git = "Git"
 tasks = "Tarefas"
+system = "Sistema"
 empty = "—"
 
 [explorer]
@@ -64,8 +68,12 @@ parent = ".."
 
 [context]
 entries = "Entradas: {count}"
+entries_header = "Ficheiros"
 files = "Ficheiros: {count}"
-tokens = "Tokens: {tokens}"
+tokens = "tokens"
+last_call = "última chamada"
+session = "Sessão"
+workspace = "Espaço de trabalho"
 model = "Modelo: {model}"
 
 [palette]
@@ -75,6 +83,9 @@ no_match = "sem resultados"
 
 [cmd]
 toggle_explorer = "Mostrar/ocultar explorador"
+toggle_terminal = "Mostrar/ocultar painel de terminal"
+toggle_context = "Mostrar/ocultar painel de contexto"
+cycle_mode = "Mudar modo do agente (AUTO/PLAN/CODE…)"
 refresh_files = "Recarregar ficheiros"
 new_chat = "Nova conversa"
 git_status = "Estado do Git"

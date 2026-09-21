@@ -5,17 +5,27 @@
 //! into [`KeyOutcome`]s for `apps/darb` to execute, and [`render`] draws
 //! it all. No provider, tool, or agent calls happen here — the panels are
 //! filled from the outside (`set_files`, `set_diff`, `push_terminal`, …).
+//! The same rule covers the environment channels: token usage arrives as
+//! a real `TokensObserved` event, system/git/language data through
+//! explicit setters — nothing is invented here (Contribuição §41).
+
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use darb_core::events::{AgentState, DarbEvent};
 use darb_core::i18n::{global_format, global_text};
 use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::keybindings::{action_for, Action};
 use crate::mouse;
 use crate::palette::{popup_rect, render_palette, Command, Palette};
 use crate::theme::Theme;
+
+pub use crate::widgets::{separator, truncated_span};
 
 /// One file row in the explorer. A presentation copy — `apps/darb` feeds
 /// it from tool results; the TUI never reads the disk itself.
@@ -43,6 +53,35 @@ pub struct ChatMessage {
 pub struct PermissionPrompt {
     pub tool: String,
     pub target: String,
+}
+
+/// Tone of a toast notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+/// Transient feedback chip (TUI §40: notifications). Auto-expires after
+/// 4s; at most the newest five are kept, so a burst cannot build up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toast {
+    pub kind: ToastKind,
+    pub text: String,
+    pub expires: Instant,
+}
+
+impl Toast {
+    pub(crate) fn marker(&self) -> &'static str {
+        match self.kind {
+            ToastKind::Info => "●",
+            ToastKind::Success => "✓",
+            ToastKind::Warning => "⚠",
+            ToastKind::Error => "✗",
+        }
+    }
 }
 
 /// Content of the file the user opened in the explorer.
@@ -80,6 +119,23 @@ impl TaskItem {
             1
         }
     }
+}
+
+/// First visible row when `offset` lines are scrolled away from the
+/// bottom of `total` rows shown in a `visible`-tall window.
+///
+/// Log panels (chat, changes, terminal, git) stream output newest at the
+/// bottom, so `App::scroll` counts from the bottom (`0` pins the newest
+/// line) while `Paragraph::scroll` counts from the top — this converts
+/// between the two. Saturates at both ends: short content starts at row 0,
+/// and scrolling past the oldest line sticks to it.
+///
+/// Limitation: `total` counts logical lines; `Paragraph` word-wrapping can
+/// show more visual rows than logical lines, so a wrapped long line can
+/// sit half-clipped. Documented, not silently wrong.
+pub(crate) fn scroll_top(total: usize, visible: u16, offset: u16) -> u16 {
+    let room = (visible as usize).saturating_add(offset as usize);
+    u16::try_from(total.saturating_sub(room)).unwrap_or(u16::MAX)
 }
 
 /// Step index under visual `row` (0-based over list items, title row
@@ -253,7 +309,11 @@ pub struct App {
     pub files: Vec<FileEntry>,
     pub context_lines: Vec<String>,
     pub input: String,
-    /// Scroll offset of the focused panel (chat or active tab).
+    /// Scroll offset of the focused panel. Log panels (chat, changes,
+    /// terminal, git) count from the bottom — `0` pins the newest output,
+    /// which is what `push`/`set_*`/`push_terminal` restore. The file
+    /// preview counts from the top instead, so opening a file shows its
+    /// first lines.
     pub scroll: u16,
     pub explorer_visible: bool,
     /// Right AI-context panel (web: collapsible with `»`).
@@ -288,8 +348,53 @@ pub struct App {
     /// Bottom terminal panel (web default: open). Closed it collapses to
     /// a one-line strip; the Terminal tab keeps the full scrollable view.
     pub bottom_open: bool,
+    /// Draft being typed before history recall replaced it.
+    pub input_draft: String,
     /// `Some` while the Ctrl+K palette is open.
     pub palette: Option<Palette>,
+    /// Real token usage from the provider (`TokensObserved`). `total == 0`
+    /// means nothing measured yet and the panels show `—` instead of a
+    /// fake number.
+    pub token_prompt: u64,
+    pub token_completion: u64,
+    /// Git branch, parsed by `apps/darb` from the porcelain status it
+    /// already fetches. Empty when there is no repository.
+    pub git_branch: String,
+    /// Working-tree change counts (status lines beyond the branch row).
+    pub git_changes: usize,
+    pub git_staged: usize,
+    pub git_untracked: usize,
+    /// System snapshot filled by `apps/darb` (`refresh_system`, throttled
+    /// to ~2s there). Empty strings on CPU mean no data available.
+    pub cpu_percent: f32,
+    pub mem_percent: f32,
+    pub mem_used: String,
+    pub mem_total: String,
+    /// UI language tag ("pt"/"en"), set by the application layer.
+    pub language: String,
+    /// Current performance profile (low/balanced), set once at startup.
+    pub profile: String,
+    /// Recent input lines, most recent LAST. Enter with an empty line
+    /// recalls the previous one, ↑/↓ walk the history.
+    pub input_history: Vec<String>,
+    pub input_history_index: Option<usize>,
+    /// Agent/tool counters for the header and context panel. Filled by
+    /// `apps/darb`; zero means no run happened yet.
+    pub tool_count: u32,
+    pub tool_calls: u32,
+    /// Whether the remote AI is configured and available (the provider
+    /// was built). Data, not decoration: drives header and status bar.
+    pub ai_online: bool,
+    /// Display name of the provider/model, e.g. `openai/gpt-…`.
+    pub model_label: String,
+    /// Short project name shown in the header.
+    pub project_name: String,
+    /// Login/user label shown in the header (env `USER`/`USERNAME`).
+    pub user: String,
+    /// Monotonic seconds since the session started (status bar uptime).
+    pub started: Instant,
+    /// Pending toast notifications, newest last.
+    pub toasts: Vec<Toast>,
 }
 
 impl Default for App {
@@ -324,7 +429,30 @@ impl Default for App {
             tasks: Vec::new(),
             tasks_index: 0,
             bottom_open: true,
+            input_draft: String::new(),
             palette: None,
+            token_prompt: 0,
+            token_completion: 0,
+            git_branch: String::new(),
+            git_changes: 0,
+            git_staged: 0,
+            git_untracked: 0,
+            cpu_percent: -1.0,
+            mem_percent: -1.0,
+            mem_used: String::new(),
+            mem_total: String::new(),
+            language: String::new(),
+            profile: String::new(),
+            input_history: Vec::new(),
+            input_history_index: None,
+            tool_count: 0,
+            tool_calls: 0,
+            ai_online: false,
+            model_label: String::new(),
+            project_name: String::new(),
+            user: String::new(),
+            started: Instant::now(),
+            toasts: Vec::new(),
         }
     }
 }
@@ -400,6 +528,12 @@ impl App {
             DarbEvent::ProviderDelta { text } => {
                 self.streaming.push_str(text);
                 self.scroll = 0;
+            }
+            DarbEvent::TokensObserved { prompt, completion } => {
+                // Measured usage, never estimated: zero values are kept
+                // so the UI can distinguish "nothing yet" from "0".
+                self.token_prompt = *prompt;
+                self.token_completion = *completion;
             }
             DarbEvent::ErrorOccurred { message } => {
                 self.push(
@@ -497,6 +631,116 @@ impl App {
 
     pub fn toggle_explorer(&mut self) {
         self.explorer_visible = !self.explorer_visible;
+    }
+
+    /// Push a toast chip (auto-expires). Newest kept last, capped at five.
+    pub fn toast(&mut self, kind: ToastKind, text: String) {
+        self.toasts.push(Toast {
+            kind,
+            text,
+            expires: Instant::now() + Duration::from_secs(4),
+        });
+        if self.toasts.len() > 5 {
+            let drop = self.toasts.len() - 5;
+            self.toasts.drain(..drop);
+        }
+    }
+
+    /// Age out expired toast chips. Cheap: only runs while toasts exist.
+    /// Called by the event loop each cycle (render takes `&App`, so the
+    /// draw path cannot mutate).
+    pub fn expire_old(&mut self) {
+        self.toasts.retain(|toast| toast.expires > Instant::now());
+    }
+
+    /// Compact change summary for the header (`+2 ~1 ?3`): staged,
+    /// modified, untracked.
+    pub fn git_change_summary(&self) -> String {
+        format!(
+            "+{} ~{} ?{}",
+            self.git_staged, self.git_changes, self.git_untracked
+        )
+    }
+
+    /// Toggle the bottom terminal panel (shared by Ctrl+J and palette).
+    pub fn toggle_bottom(&mut self) {
+        self.bottom_open = !self.bottom_open;
+    }
+
+    /// Toggle the right context panel (shared by Ctrl+L and palette).
+    pub fn toggle_context(&mut self) {
+        self.context_visible = !self.context_visible;
+    }
+
+    /// Cycle the agent mode and toast the new one (shared by Ctrl+O and
+    /// palette).
+    pub fn cycle_mode(&mut self) {
+        self.agent_mode = self.agent_mode.next();
+        self.toast(
+            ToastKind::Info,
+            format!("[ {} ]", self.agent_mode.name()),
+        );
+    }
+
+    /// Uptime label for the status bar: `4m`, `2h07m`.
+    pub fn uptime_label(&self) -> String {
+        let total = self.started.elapsed().as_secs();
+        let hours = total / 3600;
+        let minutes = (total % 3600) / 60;
+        if hours > 0 {
+            format!("{hours}h{minutes:02}m")
+        } else {
+            format!("{minutes}m")
+        }
+    }
+
+    /// True while the agent is mid-run (spinner frames in the header and
+    /// chat title). Waiting for the user is NOT busy.
+    pub fn agent_busy(&self) -> bool {
+        matches!(
+            self.agent_state,
+            AgentState::Analyzing
+                | AgentState::Planning
+                | AgentState::WaitingProvider
+                | AgentState::Executing
+                | AgentState::Reviewing
+                | AgentState::Retrying
+        )
+    }
+
+    /// Store a submitted line. Consecutive duplicates are skipped so
+    /// mashing Enter does not fill the history with the same command.
+    fn remember_input(&mut self, line: &str) {
+        if self.input_history.last().map(String::as_str) == Some(line) {
+            return;
+        }
+        self.input_history.push(line.to_string());
+    }
+
+    /// Recall a history entry relative to the current position. Moving
+    /// past the newest entry leaves history mode and restores the draft
+    /// that was being typed; moving below the oldest clamps at it.
+    fn recall_history(&mut self, step: i32) {
+        if self.input_history.is_empty() {
+            return;
+        }
+        let len = self.input_history.len() as i32;
+        let current = match self.input_history_index {
+            Some(index) => index as i32,
+            None => len, // one past the newest entry = the live draft
+        };
+        let target = current + step;
+        if target >= len {
+            self.input_history_index = None;
+            self.input = std::mem::take(&mut self.input_draft);
+            return;
+        }
+        let target = target.max(0) as usize;
+        if self.input_history_index.is_none() {
+            self.input_draft = self.input.clone();
+        }
+        self.input_history_index = Some(target);
+        self.input = self.input_history[target].clone();
     }
 
     /// Enter/exit edit mode. Entering needs an open file on the Files tab;
@@ -754,7 +998,7 @@ impl App {
                 KeyOutcome::Ignored
             }
             Action::CycleMode => {
-                self.agent_mode = self.agent_mode.next();
+                self.cycle_mode();
                 KeyOutcome::Ignored
             }
             Action::ToggleEdit => {
@@ -771,12 +1015,26 @@ impl App {
                 KeyOutcome::Ignored
             }
             Action::ScrollUp => {
-                self.move_up();
-                KeyOutcome::Ignored
+                // On the input, ↑/↓ walk the command history; on any other
+                // focused region they scroll as before.
+                if self.focus == Focus::Input {
+                    self.recall_history(-1);
+                    KeyOutcome::Ignored
+                } else {
+                    self.move_up();
+                    KeyOutcome::Ignored
+                }
             }
             Action::ScrollDown => {
-                self.move_down();
-                KeyOutcome::Ignored
+                if self.focus == Focus::Input {
+                    if self.input_history_index.is_some() {
+                        self.recall_history(1);
+                    }
+                    KeyOutcome::Ignored
+                } else {
+                    self.move_down();
+                    KeyOutcome::Ignored
+                }
             }
             Action::Submit => self.submit(),
             // A/D only answer a dialog; without one they are normal text,
@@ -785,23 +1043,37 @@ impl App {
                 self.type_key(key);
                 KeyOutcome::Ignored
             }
+            Action::HistoryPrev => {
+                self.recall_history(-1);
+                KeyOutcome::Ignored
+            }
+            Action::HistoryNext => {
+                if self.input_history_index.is_some() {
+                    self.recall_history(1);
+                    KeyOutcome::Ignored
+                } else {
+                    KeyOutcome::Ignored
+                }
+            }
         }
     }
 
-    /// Up: move the explorer highlight or the tasks cursor up, or scroll
-    /// the panel towards newer content (the offset counts from the bottom).
+    /// Up: move the explorer highlight or the tasks cursor up, show older
+    /// log output, or move the file preview towards its first line.
     fn move_up(&mut self) {
         if self.focus == Focus::Explorer {
             self.explorer_index = self.explorer_index.saturating_sub(1);
         } else if self.tasks_focused() {
             self.tasks_index = self.tasks_index.saturating_sub(1);
+        } else if self.preview_scrolling() {
+            self.scroll = self.scroll.saturating_sub(1);
         } else {
             self.scroll = self.scroll.saturating_add(1);
         }
     }
 
-    /// Down: move the explorer highlight or the tasks cursor down, or
-    /// scroll the panel back.
+    /// Down: move the explorer highlight or the tasks cursor down, show
+    /// newer log output, or move the file preview towards its last line.
     fn move_down(&mut self) {
         if self.focus == Focus::Explorer {
             let last = self.explorer_rows().saturating_sub(1);
@@ -809,9 +1081,18 @@ impl App {
         } else if self.tasks_focused() {
             let last = self.tasks.len().saturating_sub(1);
             self.tasks_index = (self.tasks_index + 1).min(last);
+        } else if self.preview_scrolling() {
+            self.scroll = self.scroll.saturating_add(1);
         } else {
             self.scroll = self.scroll.saturating_sub(1);
         }
+    }
+
+    /// True while ↑/↓ should drive the file preview (Files tab with a file
+    /// open, outside edit mode). The preview is a static document read
+    /// from the top, unlike the log panels — hence its own branch above.
+    fn preview_scrolling(&self) -> bool {
+        self.tab == Tab::Files && !self.editing && self.file_preview.is_some()
     }
 
     /// True while ↑/↓/Enter should drive the tasks list instead of the
@@ -842,8 +1123,17 @@ impl App {
             Focus::Workspace if self.tab == Tab::Terminal => {
                 let line = std::mem::take(&mut self.input);
                 if line.trim().is_empty() {
-                    KeyOutcome::Ignored
+                    // Empty Enter on the terminal tab recalls the last
+                    // command instead of doing nothing (like a real shell).
+                    match self.input_history.last().cloned() {
+                        Some(last) => {
+                            self.input = last;
+                            KeyOutcome::Ignored
+                        }
+                        None => KeyOutcome::Ignored,
+                    }
                 } else {
+                    self.remember_input(&line);
                     KeyOutcome::TerminalCommand(line)
                 }
             }
@@ -852,6 +1142,7 @@ impl App {
                 if line.trim().is_empty() {
                     KeyOutcome::Ignored
                 } else {
+                    self.remember_input(&line);
                     KeyOutcome::Submitted(line)
                 }
             }
@@ -996,7 +1287,10 @@ impl App {
 
     fn type_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char(c) => self.input.push(c),
+            KeyCode::Char(c) => {
+                self.input.push(c);
+                self.input_history_index = None;
+            }
             KeyCode::Backspace => {
                 self.input.pop();
             }
@@ -1056,11 +1350,10 @@ pub fn status_key(state: &AgentState) -> &'static str {
     }
 }
 
-/// Draw the whole shell: header, columns, tab bar, footer, overlays.
+/// Draw the whole shell: header, columns, tab strip, footer, overlays.
 pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
     use crate::components::{chat, context, diff, explorer, git, tasks, terminal};
     use crate::layout::shell_layout;
-    use ratatui::widgets::{Block, Borders, Paragraph};
 
     let layout = shell_layout(
         frame.area(),
@@ -1068,21 +1361,11 @@ pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
         app.context_visible,
         app.bottom_open,
     );
-    let title = format!(
-        "◈ DARB SHELL  ● {}  v0.1.0",
-        global_text(status_key(&app.agent_state))
-    );
-    frame.render_widget(
-        Paragraph::new(title).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme.border),
-        ),
-        layout.header,
-    );
+    render_header(frame, layout.header, app, theme);
 
     if app.explorer_visible {
-        explorer::render_explorer(frame, layout.explorer, app, theme);
+        explorer::render_explorer(frame, layout.file_tree, app, theme);
+        crate::components::system::render_system(frame, layout.system, app, theme);
     }
     match app.tab {
         Tab::Chat => chat::render_chat(frame, layout.workspace, app, theme),
@@ -1101,7 +1384,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
         // Focus glow lives here too until Fase 3 adds a terminal focus.
         terminal::render_terminal(frame, layout.terminal, app, theme);
     } else {
-        render_terminal_strip(frame, layout.terminal, theme);
+        render_terminal_strip(frame, layout.terminal, app, theme);
     }
 
     render_tab_bar(frame, layout.tabs, app, theme);
@@ -1114,9 +1397,123 @@ pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
     if let Some(prompt) = &app.permission {
         crate::dialogs::render_permission(frame, frame.area(), prompt, theme);
     }
+    crate::widgets::render_toasts(frame, frame.area(), app, theme);
 }
 
-/// Tab bar: active tab highlighted, shortcut hint on the right.
+/// Top bar, reference-style: logo + AI-DEV tag and project on the left,
+/// git summary, model, AI link, user and version on the right. Every
+/// segment is real state; segments without data simply do not render.
+pub fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let logo_style = Style::default().fg(theme.accent).add_modifier(Modifier::BOLD);
+    // Pulse while the agent runs: the logo is the spinner anchor.
+    let logo = if app.agent_busy() {
+        header_spinner(app)
+    } else {
+        "◈"
+    };
+    use crate::widgets::{separator, truncated_span};
+    let mut left = vec![
+        Span::styled(format!(" {logo} "), logo_style),
+        Span::styled("DARB", logo_style),
+        Span::styled(" SHELL", Style::default().fg(theme.text)),
+        Span::styled(" · AI DEV", Style::default().fg(theme.muted)),
+        separator(theme),
+        truncated_span(
+            app.project_name.clone(),
+            (area.width as usize / 4).max(8),
+            Style::default().fg(theme.text),
+        ),
+    ];
+    if !app.git_branch.is_empty() {
+        left.push(separator(theme));
+        left.push(Span::styled(
+            format!(
+                "⎇ {} ({})",
+                app.git_branch,
+                app.git_change_summary()
+            ),
+            Style::default().fg(theme.secondary),
+        ));
+    }
+    let right = header_right_spans(app, theme);
+    render_header_row(frame, area, left, right);
+}
+
+/// Right-side header segments: model, AI link state, user, version.
+fn header_right_spans(app: &App, theme: &Theme) -> Vec<Span<'static>> {
+    use crate::widgets::{separator, truncated_span};
+    let mut spans = vec![truncated_span(
+        app.model_label.clone(),
+        20,
+        Style::default().fg(theme.secondary),
+    )];
+    spans.push(separator(theme));
+    let (mark, style) = if app.ai_online {
+        ("●", Style::default().fg(theme.success))
+    } else {
+        ("○", Style::default().fg(theme.muted))
+    };
+    spans.push(Span::styled(format!("{mark} AI"), style));
+    if !app.user.is_empty() {
+        spans.push(separator(theme));
+        spans.push(Span::styled(
+            app.user.clone(),
+            Style::default().fg(theme.secondary),
+        ));
+    }
+    spans.push(separator(theme));
+    spans.push(Span::styled(
+        format!("v{}", env!("CARGO_PKG_VERSION")),
+        Style::default().fg(theme.faint),
+    ));
+    spans
+}
+
+/// Spinner frames for the header logo (TUI §40). Advanced by elapsed
+/// time, not by a counter the loop has to bump.
+pub fn header_spinner(app: &App) -> &'static str {
+    const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
+    let step = (app.started.elapsed().as_millis() / 240) % FRAMES.len() as u128;
+    FRAMES[step as usize]
+}
+
+/// Draw one header row: `left … right`, dropping the right side first and
+/// then the left when the terminal is too narrow (never overlapped).
+fn render_header_row(frame: &mut Frame, area: Rect, left: Vec<Span>, right: Vec<Span>) {
+    let width = area.width as usize;
+    let left_width: usize = left.iter().map(|span| span.width()).sum();
+    let right_width: usize = right.iter().map(|span| span.width()).sum();
+    let left = if left_width + right_width > width {
+        // Right side keeps priority (it identifies the session); the left
+        // truncates from the end by rebuilding without trailing segments.
+        let budget = width.saturating_sub(right_width);
+        let mut kept: Vec<Span> = Vec::with_capacity(left.len());
+        let mut used = 0usize;
+        for span in left {
+            let w = span.width();
+            if used + w > budget {
+                break;
+            }
+            used += w;
+            kept.push(span);
+        }
+        kept
+    } else {
+        left
+    };
+    let left_width: usize = left.iter().map(|span| span.width()).sum();
+    let mut line = Line::from(left);
+    if right_width <= width.saturating_sub(left_width) {
+        line.push_span(Span::raw(" ".repeat(width - left_width - right_width)));
+        for span in right {
+            line.push_span(span);
+        }
+    }
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Tab strip: active tab highlighted, agent-mode strip on the right
+/// (AUTO…EXPLAIN) and the shortcut hint only when it fits.
 fn render_tab_bar(frame: &mut Frame, area: ratatui::layout::Rect, app: &App, theme: &Theme) {
     use ratatui::layout::{Constraint, Layout};
     use ratatui::style::Style;
@@ -1161,10 +1558,45 @@ fn render_tab_bar(frame: &mut Frame, area: ratatui::layout::Rect, app: &App, the
             columns[1],
         );
     }
+    render_mode_strip(frame, area, app, theme);
 }
 
-/// Command line, with a placeholder and a focus-dependent border.
-fn render_input(frame: &mut Frame, area: ratatui::layout::Rect, app: &App, theme: &Theme) {
+/// Right-aligned agent-mode strip: `AUTO PLAN CODE …` with the active
+/// mode lit. Hidden on narrow terminals (left tabs keep priority).
+fn render_mode_strip(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    use ratatui::layout::{Constraint, Direction, Layout};
+    use ratatui::widgets::Paragraph;
+
+    let mut width = 0u16;
+    let mut spans: Vec<Span> = Vec::new();
+    for mode in AgentMode::all() {
+        if !spans.is_empty() {
+            spans.push(Span::styled(" ", Style::default()));
+            width += 1;
+        }
+        let style = if mode == app.agent_mode {
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.faint)
+        };
+        width += mode.name().chars().count() as u16;
+        spans.push(Span::styled(mode.name(), style));
+    }
+    if width + 1 > area.width.saturating_sub(20) {
+        return;
+    }
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Fill(1), Constraint::Length(width)])
+        .split(area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), columns[1]);
+}
+
+/// Command line, with placeholder, active-cursor block, and a history
+/// marker. The cursor is drawn as a full block at the end of the text.
+fn render_input(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     use ratatui::style::Style;
     use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -1176,64 +1608,131 @@ fn render_input(frame: &mut Frame, area: ratatui::layout::Rect, app: &App, theme
         } else {
             Style::default().fg(theme.border)
         });
-    if app.input.is_empty() {
-        frame.render_widget(
-            Paragraph::new(global_text("chat.placeholder"))
-                .style(Style::default().fg(theme.muted))
-                .block(block),
-            area,
-        );
-        return;
+    let mut style = Style::default();
+    if !focused {
+        style = style.fg(theme.secondary);
     }
-    frame.render_widget(
-        Paragraph::new(format!("> {}", app.input)).block(block),
-        area,
-    );
+    let text = if app.input.is_empty() {
+        format!("{}", global_text("chat.placeholder"))
+    } else {
+        let marker = if app.input_history_index.is_some() {
+            "⌛ "
+        } else {
+            ""
+        };
+        format!("> {marker}{}▌", app.input)
+    };
+    frame.render_widget(Paragraph::new(text).style(style).block(block), area);
 }
 
-/// Collapsed bottom strip: one line, like the web's `▴ TERMINAL`.
-fn render_terminal_strip(frame: &mut Frame, area: Rect, theme: &Theme) {
+/// Collapsed bottom strip: `▴ TERMINAL` plus the current mode.
+fn render_terminal_strip(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     use ratatui::style::Style;
     use ratatui::widgets::Paragraph;
 
-    let label = format!("▴ {} (Ctrl+J)", global_text("panel.terminal"));
+    let label = format!(
+        "▴ {} (Ctrl+J)",
+        global_text("panel.terminal")
+    );
+    let mode = format!(" [{}]", app.agent_mode.name());
     frame.render_widget(
-        Paragraph::new(label).style(Style::default().fg(theme.muted)),
+        Paragraph::new(Line::from(vec![
+            Span::styled(label, Style::default().fg(theme.muted)),
+            Span::styled(mode, Style::default().fg(theme.accent)),
+        ])),
         area,
     );
 }
 
-/// One-line status bar: agent state, task counts, pending permission.
-/// Only real state — no invented telemetry (Contribuição §61).
+/// One-line status bar: mode · CPU · MEM · UTF-8 · lang · branch · AI ·
+/// state, with task counts and pending-permission warning. Segments
+/// without data are skipped instead of showing placeholder junk — only
+/// real state is drawn (Contribuição §61).
 fn render_statusbar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     use ratatui::layout::{Constraint, Direction, Layout};
-    use ratatui::style::Style;
-    use ratatui::text::{Line, Span};
     use ratatui::widgets::Paragraph;
 
+    let mode_style = Style::default()
+        .fg(theme.accent)
+        .add_modifier(Modifier::BOLD);
     let mut left = vec![Span::styled(
-        global_text(status_key(&app.agent_state)),
-        Style::default().fg(theme.accent),
+        format!("[{}]", app.agent_mode.name()),
+        mode_style,
     )];
-    if !app.tasks.is_empty() {
-        let (done, pending, failed) = task_counts(app);
-        left.push(Span::styled(" │ ", Style::default().fg(theme.muted)));
+    if app.cpu_percent >= 0.0 {
+        let cpu_color = if app.cpu_percent >= 90.0 {
+            theme.danger
+        } else if app.cpu_percent >= 70.0 {
+            theme.warning
+        } else {
+            theme.secondary
+        };
         left.push(Span::styled(
-            format!("✓ {done} ○ {pending} ✗ {failed}"),
+            format!("CPU {:>3.0}%", app.cpu_percent),
+            Style::default().fg(cpu_color),
+        ));
+    }
+    if app.mem_percent >= 0.0 {
+        let mem_color = if app.mem_percent >= 90.0 {
+            theme.danger
+        } else if app.mem_percent >= 70.0 {
+            theme.warning
+        } else {
+            theme.secondary
+        };
+        left.push(Span::styled(
+            format!("MEM {:>3.0}%", app.mem_percent),
+            Style::default().fg(mem_color),
+        ));
+    }
+    if !app.language.is_empty() {
+        left.push(Span::styled(
+            format!("UTF-8 · {}", app.language),
+            Style::default().fg(theme.faint),
+        ));
+    }
+    if !app.git_branch.is_empty() {
+        left.push(Span::styled(
+            format!("⎇ {}", app.git_branch),
             Style::default().fg(theme.secondary),
         ));
     }
-    let right = if app.permission.is_some() {
-        Line::styled(
+    let (mark, style) = if app.ai_online {
+        ("●", Style::default().fg(theme.success))
+    } else {
+        ("○", Style::default().fg(theme.muted))
+    };
+    left.push(Span::styled(format!("{mark} AI"), style));
+    left.push(Span::styled(
+        global_text(status_key(&app.agent_state)),
+        Style::default().fg(theme.accent),
+    ));
+    if !app.tasks.is_empty() {
+        let (done, pending, failed) = task_counts(app);
+        left.push(Span::styled(
+            format!(" ✓{done} ○{pending} ✗{failed}"),
+            Style::default().fg(theme.secondary),
+        ));
+    }
+
+    let right_spans = if app.permission.is_some() {
+        vec![Span::styled(
             global_text("permissions.ask"),
             Style::default().fg(theme.warning),
-        )
+        )]
     } else {
-        Line::styled(
-            global_text(app.tab.title_key()),
-            Style::default().fg(theme.muted),
-        )
+        vec![
+            Span::styled(
+                format!("up {}", app.uptime_label()),
+                Style::default().fg(theme.faint),
+            ),
+            Span::styled(
+                format!(" {}", global_text(app.tab.title_key())),
+                Style::default().fg(theme.muted),
+            ),
+        ]
     };
+    let right = Line::from(right_spans);
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -1245,6 +1744,8 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(Paragraph::new(right), columns[1]);
 }
 
+/// Totals of the task list (done, pending, failed). Checked against the
+/// list length by unit tests so the sum can never drift (§15).
 fn task_counts(app: &App) -> (usize, usize, usize) {
     let (mut done, mut pending, mut failed) = (0, 0, 0);
     for task in &app.tasks {
@@ -1400,10 +1901,12 @@ mod tests {
             KeyOutcome::Ignored,
             "empty line submits nothing"
         );
+        // Focus is on the input: ↑ recalls the submitted line (history),
+        // ↓ returns to the (empty) draft, Backspace stays a no-op.
         app.handle_key(key(KeyCode::Up));
-        assert_eq!(app.scroll, 1);
+        assert_eq!(app.input, "hi");
         app.handle_key(key(KeyCode::Down));
-        assert_eq!(app.scroll, 0);
+        assert!(app.input.is_empty());
         app.handle_key(key(KeyCode::Backspace));
         assert!(app.input.is_empty());
     }
@@ -1659,8 +2162,78 @@ mod tests {
             success: true,
         });
         let screen = draw(&app, 110, 34);
-        assert!(screen.contains("✓ 1"), "{screen}");
-        assert!(screen.contains("○ 0"), "{screen}");
+        assert!(screen.contains("✓1"), "{screen}");
+        assert!(screen.contains("○0"), "{screen}");
+    }
+
+    #[test]
+    fn header_shows_project_model_and_git() {
+        let mut app = App::new();
+        app.project_name = "darb-shell".to_string();
+        app.model_label = "openai/gpt-test".to_string();
+        app.git_branch = "main".to_string();
+        app.ai_online = true;
+        let screen = draw(&app, 110, 34);
+        assert!(screen.contains("DARB"), "{screen}");
+        assert!(screen.contains("darb-shell"), "{screen}");
+        assert!(screen.contains("openai/gpt-test"), "{screen}");
+        assert!(screen.contains("main"), "{screen}");
+    }
+
+    #[test]
+    fn narrow_header_drops_left_before_overlapping() {
+        let mut app = App::new();
+        app.project_name = "a-very-long-project-name-here".to_string();
+        app.model_label = "openai/gpt-test".to_string();
+        // 40 cols cannot fit both sides; the row must stay single-line.
+        let screen = draw(&app, 40, 24);
+        assert!(screen.contains("openai/gpt-test"), "{screen}");
+        let lines: Vec<&str> = screen.lines().collect();
+        let header = lines[1];
+        assert!(
+            !header.contains("a-very-long"),
+            "left side must truncate first: {header}"
+        );
+    }
+
+    #[test]
+    fn system_panel_renders_gauges_only_with_data() {
+        let mut app = App::new();
+        app.profile = "balanced".to_string();
+        app.cpu_percent = 42.0;
+        app.mem_percent = 61.0;
+        let screen = draw(&app, 110, 34);
+        assert!(screen.contains("CPU"), "{screen}");
+        assert!(screen.contains("42%"), "{screen}");
+        assert!(screen.contains("balanced"), "{screen}");
+        // Without telemetry nothing is invented:
+        let bare = draw(&App::new(), 110, 34);
+        assert!(!bare.contains("CPU "), "{bare}");
+    }
+
+    #[test]
+    fn tokens_observed_updates_the_context_state() {
+        let mut app = App::new();
+        app.apply_event(&DarbEvent::TokensObserved {
+            prompt: 18432,
+            completion: 512,
+        });
+        assert_eq!(app.token_prompt, 18432);
+        assert_eq!(app.token_completion, 512);
+        let screen = draw(&app, 110, 34);
+        assert!(screen.contains("18.4k"), "{screen}");
+    }
+
+    #[test]
+    fn toast_expires_and_is_capped() {
+        let mut app = App::new();
+        for i in 0..7 {
+            app.toast(ToastKind::Info, format!("toast-{i}"));
+        }
+        assert_eq!(app.toasts.len(), 5);
+        assert_eq!(app.toasts[4].text, "toast-6");
+        app.expire_old();
+        assert_eq!(app.toasts.len(), 5, "fresh toasts stay");
     }
 
     #[test]
@@ -1888,5 +2461,59 @@ mod tests {
         assert!(screen.contains('▍'), "cursor marker:\n{screen}");
         let hint = darb_core::i18n::global_text("file.edit_hint");
         assert!(screen.contains(hint.as_str()), "{screen}");
+    }
+
+    #[test]
+    fn scroll_top_pins_newest_and_clamps() {
+        assert_eq!(scroll_top(10, 5, 0), 5, "pinned to the newest row");
+        assert_eq!(scroll_top(10, 5, 2), 3, "two rows up from the bottom");
+        assert_eq!(scroll_top(10, 5, 50), 0, "sticks to the oldest row");
+        assert_eq!(scroll_top(3, 10, 0), 0, "short content starts at row 0");
+        assert_eq!(scroll_top(0, 10, 0), 0);
+        assert_eq!(scroll_top(10, 0, 0), 10, "degenerate window hides all");
+    }
+
+    #[test]
+    fn chat_shows_newest_output_when_full() {
+        let mut app = App::new();
+        for i in 0..30 {
+            app.push(MessageRole::Agent, format!("line-{i:02}"));
+        }
+        // 60x20 leaves the workspace 4 rows tall (2 content rows): the
+        // pinned view must show the newest lines, not the oldest.
+        let screen = draw(&app, 60, 20);
+        assert!(screen.contains("line-29"), "{screen}");
+        assert!(!screen.contains("line-00"), "{screen}");
+        // One step up moves the window one row towards older output
+        // (focus on the workspace: on the input, ↑ walks the history).
+        app.focus = Focus::Workspace;
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.scroll, 1);
+        let screen = draw(&app, 60, 20);
+        assert!(screen.contains("line-27"), "{screen}");
+        assert!(!screen.contains("line-29"), "{screen}");
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn preview_scroll_moves_towards_the_top_on_up() {
+        let mut app = App::new();
+        let text = (0..30)
+            .map(|i| format!("row-{i:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.set_file_preview("big.txt".to_string(), text);
+        app.set_tab(Tab::Files);
+        // Focus the workspace: on the input, ↑/↓ walk the history.
+        app.focus = Focus::Workspace;
+        // Not editing: a document reads from the top, so Down goes
+        // deeper and Up comes back — the opposite of the log panels.
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.scroll, 1);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.scroll, 0);
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.scroll, 0, "clamps at the first line");
     }
 }

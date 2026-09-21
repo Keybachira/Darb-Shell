@@ -27,6 +27,8 @@ pub enum Action {
     ShowTab(Tab),
     PermissionAllow,
     PermissionDeny,
+    HistoryPrev,
+    HistoryNext,
     Ignore,
 }
 

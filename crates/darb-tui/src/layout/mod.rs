@@ -8,6 +8,8 @@
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
+use crate::components::system::SYSTEM_MIN_ROWS;
+
 /// Height of the bottom terminal panel while open: title + ~6 content
 /// lines. Fixed (not proportional) so small terminals stay usable.
 pub const TERMINAL_OPEN_HEIGHT: u16 = 8;
@@ -19,7 +21,13 @@ pub const TERMINAL_CLOSED_HEIGHT: u16 = 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShellLayout {
     pub header: Rect,
+    /// Whole left column (explorer + system panel).
     pub explorer: Rect,
+    /// File list inside the left column (explorer minus the system
+    /// panel at the bottom).
+    pub file_tree: Rect,
+    /// System panel at the bottom of the left column.
+    pub system: Rect,
     pub workspace: Rect,
     /// Bottom terminal inside the center column. Never zero: 1 row when
     /// closed, so the collapsed strip always has somewhere to draw.
@@ -67,6 +75,17 @@ pub fn shell_layout(
         (false, true) => (Rect::new(0, 0, 0, 0), columns[0], columns[1]),
         (false, false) => (Rect::new(0, 0, 0, 0), columns[0], Rect::new(0, 0, 0, 0)),
     };
+    // Left column split: file list on top, system panel pinned to the
+    // bottom (CPU/RAM/mode). Too-short terminals collapse the system
+    // panel to zero rows so the file list keeps priority.
+    let system_height = SYSTEM_MIN_ROWS.min(explorer.height.saturating_sub(4));
+    let left_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(system_height),
+        ])
+        .split(explorer);
     let terminal_height = if bottom_open {
         TERMINAL_OPEN_HEIGHT
     } else {
@@ -79,6 +98,8 @@ pub fn shell_layout(
     ShellLayout {
         header: rows[0],
         explorer,
+        file_tree: left_rows[0],
+        system: left_rows[1],
         workspace: center_rows[0],
         terminal: center_rows[1],
         context,

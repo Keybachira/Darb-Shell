@@ -4,7 +4,10 @@ busy = "The agent is busy — wait for it to finish"
 offline = "Remote AI unavailable — local tools still work"
 cancelling = "Cancelling…"
 profile = "Profile: {name}"
+profile_key = "profile"
 tools = "tools: {count}"
+tools_key = "tools"
+state_key = "state"
 cwd = "directory: {path}"
 config_reloaded = "config reloaded"
 provider_unavailable = "note: remote AI unavailable ({reason}) — local tools still work"
@@ -56,6 +59,7 @@ changes = "Changes"
 terminal = "Terminal"
 git = "Git"
 tasks = "Tasks"
+system = "System"
 empty = "—"
 
 [explorer]
@@ -64,8 +68,12 @@ parent = ".."
 
 [context]
 entries = "Entries: {count}"
+entries_header = "Files"
 files = "Files: {count}"
-tokens = "Tokens: {tokens}"
+tokens = "tokens"
+last_call = "last call"
+session = "Session"
+workspace = "Workspace"
 model = "Model: {model}"
 
 [palette]
@@ -75,6 +83,9 @@ no_match = "no matches"
 
 [cmd]
 toggle_explorer = "Toggle explorer"
+toggle_terminal = "Toggle terminal panel"
+toggle_context = "Toggle context panel"
+cycle_mode = "Cycle agent mode (AUTO/PLAN/CODE…)"
 refresh_files = "Reload files"
 new_chat = "New chat"
 git_status = "Git status"

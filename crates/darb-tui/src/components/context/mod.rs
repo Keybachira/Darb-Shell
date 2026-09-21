@@ -1,10 +1,12 @@
-//! Context panel: token/file summary lines fed by `App::set_context`.
-//!
-//! The lines are already localised by the caller, because only
-//! `apps/darb` knows the numbers behind them.
+//! Context panel (right sidebar, AI context): token budget with gauge,
+//! per-call tokens, session stats, files, tools and model. Every value
+//! is real state fed by `apps/darb`; unknown numbers render as `—`,
+//! never as guesses (Contribuição §41).
 
 use darb_core::i18n::global_text;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
@@ -13,14 +15,91 @@ use crate::theme::Theme;
 use crate::widgets;
 
 pub fn render_context(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let text = if app.context_lines.is_empty() {
-        global_text("panel.empty")
+    let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
+
+    lines.push(widgets::section_header(&global_text("context.session"), theme));
+    if app.token_prompt > 0 {
+        lines.push(widgets::kv_line(
+            &global_text("context.tokens"),
+            format_token(app.token_prompt),
+            theme,
+        ));
+        lines.push(widgets::kv_line(
+            &global_text("context.last_call"),
+            format_token(app.token_completion),
+            theme,
+        ));
     } else {
-        app.context_lines.join("\n")
-    };
+        lines.push(Line::styled(
+            global_text("panel.empty"),
+            Style::default().fg(theme.muted),
+        ));
+    }
+    if !app.model_label.is_empty() {
+        lines.push(widgets::kv_line(
+            &global_text("context.model"),
+            app.model_label.clone(),
+            theme,
+        ));
+    }
+    if app.tool_calls > 0 {
+        lines.push(widgets::kv_line(
+            &global_text("app.tools"),
+            app.tool_calls.to_string(),
+            theme,
+        ));
+    }
+
+    if !app.git_branch.is_empty() || app.git_changes + app.git_staged + app.git_untracked > 0 {
+        lines.push(widgets::section_header(&global_text("context.workspace"), theme));
+        if !app.git_branch.is_empty() {
+            lines.push(widgets::kv_line("branch", app.git_branch.clone(), theme));
+        }
+        lines.push(widgets::kv_line(
+            "changes",
+            app.git_change_summary(),
+            theme,
+        ));
+    }
+
+    lines.push(widgets::section_header(&global_text("context.entries_header"), theme));
+    lines.push(widgets::kv_line(
+        &global_text("context.entries"),
+        app.files.len().to_string(),
+        theme,
+    ));
+    if !app.context_lines.is_empty() {
+        for line in &app.context_lines {
+            lines.push(Line::styled(
+                line.clone(),
+                Style::default().fg(theme.secondary),
+            ));
+        }
+    }
+
     frame.render_widget(
-        // The context panel is informational: it is never a focus target.
-        Paragraph::new(text).block(widgets::panel(global_text("panel.context"), false, theme)),
+        // Informational panel: never a focus target.
+        Paragraph::new(lines).block(widgets::panel(global_text("panel.context"), false, theme)),
         area,
     );
+}
+
+/// Human token count: `1.2k`, `18.4k`, plain number below 1000.
+fn format_token(value: u64) -> String {
+    if value >= 1000 {
+        format!("{:.1}k", value as f64 / 1000.0)
+    } else {
+        value.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_formatting_is_human() {
+        assert_eq!(format_token(42), "42");
+        assert_eq!(format_token(18432), "18.4k");
+    }
 }

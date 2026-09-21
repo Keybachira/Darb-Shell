@@ -31,6 +31,7 @@ thiserror = "2"
 anyhow = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tree-sitter = "0.25"
+sysinfo = "0.31"
 
 darb-core = { path = "crates/darb-core" }
 darb-agent = { path = "crates/darb-agent" }

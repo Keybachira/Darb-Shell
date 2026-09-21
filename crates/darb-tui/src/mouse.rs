@@ -59,6 +59,8 @@ impl Click {
         if pos_in(self.x, self.y, layout.explorer) {
             return MouseRegion::Explorer;
         }
+        // (`layout.explorer` covers the whole left column: file tree and
+        // system panel share the Explorer region; rows map via file_tree.)
         if pos_in(self.x, self.y, layout.terminal) {
             return MouseRegion::Terminal;
         }
@@ -130,11 +132,13 @@ impl Click {
             app.context_visible,
             app.bottom_open,
         );
-        if !pos_in(self.x, self.y, layout.explorer) {
+        // The file list lives in the top half of the left column; the
+        // system panel below it carries no click actions.
+        if !pos_in(self.x, self.y, layout.file_tree) {
             return None;
         }
         // Inside the block border: row 0 is the title, entries start at 1.
-        let inner_top = layout.explorer.y + 1;
+        let inner_top = layout.file_tree.y + 1;
         if self.y < inner_top {
             return None;
         }
