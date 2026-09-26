@@ -18,6 +18,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::config::{PermissionDecision, PermissionsConfig};
+
 /// How much power the AI has (vision §§16–19).
 ///
 /// This is a *power* axis, deliberately separate from `darb-tui`'s
@@ -54,6 +56,96 @@ impl AiMode {
             AiMode::Assist => AiMode::Autonomous,
             AiMode::Autonomous => AiMode::Mentor,
         }
+    }
+
+    /// The permission profile this mode implies (P1 step 1, vision §§16–19).
+    ///
+    /// A mode is a *ceiling*, not a suggestion: `Mentor` cannot write even
+    /// if the user's config says `edit: allow`. That direction is the one
+    /// that matters — a user who has loosened their config once should not
+    /// then find the AI writing files in Mentor mode.
+    ///
+    /// The floor is unchanged in all three modes: `sudo` and `git push` stay
+    /// denied (Negócio §§8–9). A mode can widen what is *askable*, never
+    /// what is *forbidden*.
+    pub fn permissions(self) -> PermissionsConfig {
+        use PermissionDecision::{Allow, Ask, Deny};
+        match self {
+            // Observes and explains. Everything that touches the project is
+            // refused outright rather than confirmed: asking "may I edit?"
+            // in a mode whose promise is "I will not edit" is noise.
+            AiMode::Mentor => PermissionsConfig {
+                read: Allow,
+                edit: Deny,
+                shell: Deny,
+                delete: Deny,
+                git_push: Deny,
+            },
+            // Proposes changes; the user applies them.
+            AiMode::Assist => PermissionsConfig {
+                read: Allow,
+                edit: Ask,
+                shell: Ask,
+                delete: Ask,
+                git_push: Deny,
+            },
+            // Edits, runs and tests on its own. Delete still asks: losing a
+            // file is not recoverable by re-running anything.
+            AiMode::Autonomous => PermissionsConfig {
+                read: Allow,
+                edit: Allow,
+                shell: Ask,
+                delete: Ask,
+                git_push: Deny,
+            },
+        }
+    }
+
+    /// Tighten `config` so it never grants more than this mode allows.
+    ///
+    /// Denials win over allows: the resulting decision for a category is
+    /// the *stricter* of what the user configured and what the mode allows.
+    /// Asking the model to behave is not a control — the permission gate is.
+    pub fn apply_to(self, config: &mut PermissionsConfig) {
+        use PermissionDecision::Deny;
+        let ceiling = self.permissions();
+        config.read = stricter(config.read, ceiling.read);
+        config.edit = stricter(config.edit, ceiling.edit);
+        config.shell = stricter(config.shell, ceiling.shell);
+        config.delete = stricter(config.delete, ceiling.delete);
+        config.git_push = Deny;
+    }
+
+    /// One line telling the model what this mode means (P1 step 3).
+    ///
+    /// Deliberately one sentence per mode. A longer prompt means the
+    /// permission gate is being described twice, and the two copies drift.
+    pub fn instruction(self) -> &'static str {
+        match self {
+            AiMode::Mentor => {
+                "You are in MENTOR mode: explain and suggest only. Do not edit files or run commands."
+            }
+            AiMode::Assist => {
+                "You are in ASSIST mode: propose changes, the user applies them. Never edit without confirmation."
+            }
+            AiMode::Autonomous => {
+                "You are in AUTONOMOUS mode: edit, run and test on your own. Never use sudo or push."
+            }
+        }
+    }
+}
+
+/// The stricter of two decisions (P1: a mode is a ceiling).
+///
+/// Order is Deny > Ask > Allow. Two `Deny`s are the same denial, and a
+/// `grant_once` can never widen this — the grant only converts an `Ask`,
+/// so a denied category stays denied whatever the user clicks.
+fn stricter(a: PermissionDecision, b: PermissionDecision) -> PermissionDecision {
+    use PermissionDecision::{Allow, Ask, Deny};
+    match (a, b) {
+        (Deny, _) | (_, Deny) => Deny,
+        (Ask, _) | (_, Ask) => Ask,
+        (Allow, Allow) => Allow,
     }
 }
 
@@ -557,6 +649,142 @@ mod tests {
     fn every_mode_has_a_display_name() {
         for mode in AiMode::ALL {
             assert!(!mode.name().is_empty());
+        }
+    }
+
+    /// P1 step 2. The table the whole feature rests on: every mode against
+    /// every category, as one readable grid instead of 15 scattered asserts.
+    /// A mode that can do something unexpected shows up here as a wrong
+    /// cell, not as a surprising edit months later.
+    #[test]
+    fn the_mode_permission_table_is_exactly_the_documented_one() {
+        use PermissionDecision::{Allow, Ask, Deny};
+        let cell = |mode: AiMode, f: fn(&PermissionsConfig) -> PermissionDecision| {
+            f(&mode.permissions())
+        };
+        let read = |c: &PermissionsConfig| c.read;
+        let edit = |c: &PermissionsConfig| c.edit;
+        let shell = |c: &PermissionsConfig| c.shell;
+        let delete = |c: &PermissionsConfig| c.delete;
+        let push = |c: &PermissionsConfig| c.git_push;
+
+        //            read    edit    shell   delete  push
+        assert_eq!(cell(AiMode::Mentor, read), Allow);
+        assert_eq!(cell(AiMode::Mentor, edit), Deny);
+        assert_eq!(cell(AiMode::Mentor, shell), Deny);
+        assert_eq!(cell(AiMode::Mentor, delete), Deny);
+        assert_eq!(cell(AiMode::Mentor, push), Deny);
+
+        assert_eq!(cell(AiMode::Assist, read), Allow);
+        assert_eq!(cell(AiMode::Assist, edit), Ask);
+        assert_eq!(cell(AiMode::Assist, shell), Ask);
+        assert_eq!(cell(AiMode::Assist, delete), Ask);
+        assert_eq!(cell(AiMode::Assist, push), Deny);
+
+        assert_eq!(cell(AiMode::Autonomous, read), Allow);
+        assert_eq!(cell(AiMode::Autonomous, edit), Allow);
+        assert_eq!(cell(AiMode::Autonomous, shell), Ask);
+        assert_eq!(cell(AiMode::Autonomous, delete), Ask);
+        assert_eq!(cell(AiMode::Autonomous, push), Deny);
+    }
+
+    #[test]
+    fn the_modes_are_ordered_from_least_to_most_power() {
+        use PermissionDecision::{Allow, Ask, Deny};
+        // Monotonic in write power: no mode may be more permissive than a
+        // later one in the cycle, or "Autonomous" would be a trapdoor.
+        let rank = |d: PermissionDecision| match d {
+            Deny => 0,
+            Ask => 1,
+            Allow => 2,
+        };
+        let mut previous = 0;
+        for mode in [
+            AiMode::Mentor,
+            AiMode::Assist,
+            AiMode::Autonomous,
+        ] {
+            let p = mode.permissions();
+            let power = rank(p.edit) + rank(p.shell);
+            assert!(power >= previous, "{} is not more powerful", mode.name());
+            previous = power;
+        }
+    }
+
+    #[test]
+    fn a_mode_never_widens_a_users_stricter_choice() {
+        use PermissionDecision::Deny;
+        // A user who denied shell stays denied in every mode: the mode is a
+        // ceiling, and this is the direction that protects them.
+        let mut config = PermissionsConfig {
+            shell: Deny,
+            edit: Deny,
+            ..PermissionsConfig::default()
+        };
+        for mode in AiMode::ALL {
+            mode.apply_to(&mut config);
+            assert_eq!(config.shell, Deny, "{}", mode.name());
+            assert_eq!(config.edit, Deny, "{}", mode.name());
+        }
+    }
+
+    #[test]
+    fn a_mode_can_tighten_a_loose_config() {
+        use PermissionDecision::{Allow, Deny};
+        // The opposite direction: a config that allows everything must not
+        // hand Mentor write access.
+        let mut config = PermissionsConfig {
+            read: Allow,
+            edit: Allow,
+            shell: Allow,
+            delete: Allow,
+            git_push: Allow,
+        };
+        AiMode::Mentor.apply_to(&mut config);
+        assert_eq!(config.read, Allow, "mentor still reads");
+        assert_eq!(config.edit, Deny);
+        assert_eq!(config.shell, Deny);
+        assert_eq!(config.delete, Deny);
+        assert_eq!(config.git_push, Deny, "push is never allowed");
+    }
+
+    #[test]
+    fn git_push_is_denied_in_every_mode() {
+        use PermissionDecision::{Allow, Deny};
+        // Even with an all-allow config, no mode may enable push.
+        for mode in AiMode::ALL {
+            let mut config = PermissionsConfig {
+                read: Allow,
+                edit: Allow,
+                shell: Allow,
+                delete: Allow,
+                git_push: Allow,
+            };
+            mode.apply_to(&mut config);
+            assert_eq!(config.git_push, Deny, "{}", mode.name());
+        }
+    }
+
+    #[test]
+    fn the_default_config_survives_autonomous_unchanged() {
+        // The shipped defaults already equal the Autonomous profile, so
+        // enabling the mode must not surprise a user who configured nothing.
+        let mut config = PermissionsConfig::default();
+        let before = config.clone();
+        AiMode::Autonomous.apply_to(&mut config);
+        assert_eq!(config, before, "autonomous == defaults");
+    }
+
+    #[test]
+    fn every_mode_explains_itself_in_one_sentence() {
+        for mode in AiMode::ALL {
+            let text = mode.instruction();
+            assert!(!text.is_empty(), "{}", mode.name());
+            assert!(
+                text.contains(mode.name()),
+                "{} does not name itself: {text}",
+                mode.name()
+            );
         }
     }
 }

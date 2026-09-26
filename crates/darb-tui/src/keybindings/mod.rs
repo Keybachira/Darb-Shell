@@ -29,12 +29,25 @@ pub enum Action {
     PermissionDeny,
     HistoryPrev,
     HistoryNext,
+    /// Cycle the AI power mode (P1: Mentor/Assist/Autonomous). Separate
+    /// from `CycleMode`, which cycles the *task* mode (plan/code/debug).
+    CycleAiMode,
     Ignore,
 }
 
 pub fn action_for(key: KeyEvent) -> Action {
     // Ctrl combinations first: they win over plain characters.
     if key.modifiers.contains(KeyModifiers::CONTROL) {
+        // Ctrl+Shift+M cycles the AI power mode. SHIFT must be required
+        // explicitly: without it, plain Ctrl+M would also fire, and that
+        // collides with Enter (both arrive as CR) — the reason Ctrl+M is
+        // not already used for the task mode.
+        if key.modifiers.contains(KeyModifiers::SHIFT) {
+            return match key.code {
+                KeyCode::Char('m') | KeyCode::Char('M') => Action::CycleAiMode,
+                _ => Action::Ignore,
+            };
+        }
         return match key.code {
             KeyCode::Char('c') | KeyCode::Char('C') => Action::CancelRequested,
             KeyCode::Char('b') | KeyCode::Char('B') => Action::ToggleExplorer,

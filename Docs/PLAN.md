@@ -61,8 +61,25 @@ mesmo estado) seria um fork.
 ### Pronto quando
 
 - `Workspace` tem testes a cobrir cada mutação. ✅ **feito** — 30 testes
-- `App` lê modo e estado de `Workspace`, não tem campos duplicados. ⏳
-- `cargo clippy -D warnings` limpo. ✅
+- `App` lê modo e estado de `Workspace`, não tem campos duplicados. ✅
+  **feito** — `git_branch`/`git_changes`/`git_staged`/`git_untracked` e a
+  segunda cópia no `Ui` foram removidas; o `App` lê `workspace.git` através
+  de `git_branch()` e `git_change_summary()`.
+- `WorkspaceChanged` publicado e consumido. ✅ **feito** — o `Ui` tem o
+  `EventBus` e emite; o `App::apply_event` adopta o estado inteiro.
+- `cargo clippy --all-targets -D warnings` limpo. ✅
+- `cargo test --workspace` verde. ✅ **feito** — 209 testes
+
+### O que NÃO foi migrado (e porquê)
+
+O passo 4(Migration) migrou o que era *duplicado*. Os restantes campos do
+`App` (ficheiros explorados, linhas de terminal, preview, diff, contexto)
+são **dados de apresentação**, não estado do projecto: o `Workspace` não os
+tem porque não descrevem o projecto. Copiá-los para lá seria mover a
+duplicação em vez de a eliminar.
+
+Espera-se que o `Workspace` os absorva quando P1 começar a usá-los como
+estado real (ficheiros activos, diagnósticos, processos).
 
 ### Fora
 

@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use darb_core::events::{AgentState, DarbEvent};
 use darb_core::i18n::{global_format, global_text};
+use darb_core::workspace::Workspace;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -357,13 +358,14 @@ pub struct App {
     /// fake number.
     pub token_prompt: u64,
     pub token_completion: u64,
-    /// Git branch, parsed by `apps/darb` from the porcelain status it
-    /// already fetches. Empty when there is no repository.
-    pub git_branch: String,
-    /// Working-tree change counts (status lines beyond the branch row).
-    pub git_changes: usize,
-    pub git_staged: usize,
-    pub git_untracked: usize,
+    /// The workspace, the single source of truth about the project (P0).
+    ///
+    /// The TUI holds it rather than copying the values out: `App` used to
+    /// carry its own `git_branch` / `git_changes` / … which `apps/darb` had
+    /// to keep in sync by hand, and which a second renderer (the desktop)
+    /// would have had to duplicate again. Reading through accessors keeps
+    /// one copy, and the copy lives in the core — not in a view.
+    pub workspace: Workspace,
     /// System snapshot filled by `apps/darb` (`refresh_system`, throttled
     /// to ~2s there). Empty strings on CPU mean no data available.
     pub cpu_percent: f32,
@@ -387,7 +389,10 @@ pub struct App {
     pub ai_online: bool,
     /// Display name of the provider/model, e.g. `openai/gpt-…`.
     pub model_label: String,
-    /// Short project name shown in the header.
+    /// Short project name shown in the header. Mirrors
+    /// `workspace.project_name`; kept as a field because the header renders
+    /// before anything else is known, and a `&App` render cannot reach out
+    /// to the application layer.
     pub project_name: String,
     /// Login/user label shown in the header (env `USER`/`USERNAME`).
     pub user: String,
@@ -433,10 +438,7 @@ impl Default for App {
             palette: None,
             token_prompt: 0,
             token_completion: 0,
-            git_branch: String::new(),
-            git_changes: 0,
-            git_staged: 0,
-            git_untracked: 0,
+            workspace: Workspace::default(),
             cpu_percent: -1.0,
             mem_percent: -1.0,
             mem_used: String::new(),
@@ -534,6 +536,13 @@ impl App {
                 // so the UI can distinguish "nothing yet" from "0".
                 self.token_prompt = *prompt;
                 self.token_completion = *completion;
+            }
+            DarbEvent::WorkspaceChanged { workspace } => {
+                // Adopt the new state wholesale. Re-deriving only the
+                // project name would leave the header and the panels
+                // disagreeing, which is the drift P0 exists to prevent.
+                self.project_name = workspace.project_name.clone();
+                self.workspace = workspace.clone();
             }
             DarbEvent::ErrorOccurred { message } => {
                 self.push(
@@ -654,12 +663,19 @@ impl App {
     }
 
     /// Compact change summary for the header (`+2 ~1 ?3`): staged,
-    /// modified, untracked.
+    /// modified, untracked. Reads the workspace, so the header can never
+    /// disagree with the Git panel.
     pub fn git_change_summary(&self) -> String {
         format!(
             "+{} ~{} ?{}",
-            self.git_staged, self.git_changes, self.git_untracked
+            self.workspace.git.staged, self.workspace.git.changes, self.workspace.git.untracked
         )
+    }
+
+    /// Current branch, empty when there is no repository. Panels must skip
+    /// their Git section entirely in that case, never show an empty branch.
+    pub fn git_branch(&self) -> &str {
+        &self.workspace.git.branch
     }
 
     /// Toggle the bottom terminal panel (shared by Ctrl+J and palette).
@@ -998,6 +1014,12 @@ impl App {
                 self.cycle_mode();
                 KeyOutcome::Ignored
             }
+            // `CycleAiMode` is intentionally NOT handled here. Changing the
+            // AI mode rewrites the permission policy, and the `App` has no
+            // registry to rewrite — only the application layer does. A
+            // view that could flip the mode on its own would be able to
+            // widen its own permissions.
+            Action::CycleAiMode => KeyOutcome::Ignored,
             Action::ToggleEdit => {
                 self.toggle_edit();
                 KeyOutcome::Ignored
@@ -1423,10 +1445,10 @@ pub fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             Style::default().fg(theme.text),
         ),
     ];
-    if !app.git_branch.is_empty() {
+    if !app.git_branch().is_empty() {
         left.push(separator(theme));
         left.push(Span::styled(
-            format!("⎇ {} ({})", app.git_branch, app.git_change_summary()),
+            format!("⎇ {} ({})", app.git_branch(), app.git_change_summary()),
             Style::default().fg(theme.secondary),
         ));
     }
@@ -1651,6 +1673,14 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         format!("[{}]", app.agent_mode.name()),
         mode_style,
     )];
+    // The AI power mode sits next to the task mode, not instead of it:
+    // one says what the AI is doing, the other says how far it may go
+    // (P1). A user reading only the task mode cannot tell whether the AI
+    // is currently allowed to write.
+    left.push(Span::styled(
+        format!(" {}", app.workspace.mode.name()),
+        Style::default().fg(theme.secondary),
+    ));
     if app.cpu_percent >= 0.0 {
         let cpu_color = if app.cpu_percent >= 90.0 {
             theme.danger
@@ -1683,9 +1713,9 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             Style::default().fg(theme.faint),
         ));
     }
-    if !app.git_branch.is_empty() {
+    if !app.git_branch().is_empty() {
         left.push(Span::styled(
-            format!("⎇ {}", app.git_branch),
+            format!("⎇ {}", app.git_branch()),
             Style::default().fg(theme.secondary),
         ));
     }
@@ -1754,6 +1784,7 @@ fn task_counts(app: &App) -> (usize, usize, usize) {
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
+    use darb_core::workspace::GitSnapshot;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -2163,7 +2194,13 @@ mod tests {
         let mut app = App::new();
         app.project_name = "darb-shell".to_string();
         app.model_label = "openai/gpt-test".to_string();
-        app.git_branch = "main".to_string();
+        // Set git state on the workspace, the only place it lives: the
+        // header reads it back from there, so this also proves a workspace
+        // change reaches rendered state.
+        app.workspace.git = GitSnapshot {
+            branch: "main".to_string(),
+            ..GitSnapshot::default()
+        };
         app.ai_online = true;
         let screen = draw(&app, 110, 34);
         assert!(screen.contains("DARB"), "{screen}");

@@ -157,8 +157,14 @@ fn is_sudo_command(command: &str) -> bool {
     })
 }
 
+/// The permission manager, shared by the agent and the TUI.
+///
+/// The configuration is behind a lock rather than being `Copy` because a
+/// mode change rewrites it at runtime (P1): switching to Mentor must
+/// actually revoke write access, not just relabel the footer. The lock is
+/// held only to read or replace the config — never across a tool call.
 pub struct PermissionManager {
-    config: PermissionsConfig,
+    config: std::sync::RwLock<PermissionsConfig>,
     /// Single-use user confirmations, keyed `(tool, target)`. A grant turns
     /// one `AskUser` into `Allowed` and is then consumed. Grants never
     /// override `Denied`: policy denials, sudo, and unknown tools stay
@@ -169,13 +175,41 @@ pub struct PermissionManager {
 impl PermissionManager {
     pub fn new(config: PermissionsConfig) -> Self {
         Self {
-            config,
+            config: std::sync::RwLock::new(config),
             grants: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
-    pub fn config(&self) -> &PermissionsConfig {
-        &self.config
+    /// A snapshot of the current policy. Returns the default on a poisoned
+    /// lock rather than panicking: a stuck lock must not take the app down.
+    pub fn config(&self) -> PermissionsConfig {
+        self.config
+            .read()
+            .map(|c| c.clone())
+            .unwrap_or_default()
+    }
+
+    /// Replace the policy wholesale (P1: the application layer applies the
+    /// new mode here, so the next dispatch is already governed by it).
+    ///
+    /// Outstanding grants are dropped. A confirmation the user gave while
+    /// the AI could write freely must not survive a switch to Mentor: it
+    /// was consent for *that* mode, not a standing permission. Keeping it
+    /// would let a single "yes" carry across a power change the user
+    /// believed had tightened things.
+    pub fn set_config(&self, config: PermissionsConfig) {
+        if let Ok(mut slot) = self.config.write() {
+            *slot = config;
+        }
+        if let Ok(mut grants) = self.grants.lock() {
+            grants.clear();
+        }
+    }
+
+    /// The config as seen by one evaluation, cloned once so the whole
+    /// decision is consistent even if the mode changes mid-check.
+    fn snapshot(&self) -> PermissionsConfig {
+        self.config()
     }
 
     /// Record a one-time user confirmation for an exact tool + target.
@@ -189,7 +223,10 @@ impl PermissionManager {
     /// grants: no I/O, no global state, so the Agent, tools, and tests
     /// all see the same decision path — there is no bypass around this.
     pub fn check(&self, request: &ToolRequest) -> PermissionOutcome {
-        match self.evaluate(request) {
+        // One snapshot for the whole check: the second evaluation below
+        // must not see a mode that changed in between.
+        let config = self.snapshot();
+        match self.evaluate_with(request, &config) {
             PermissionOutcome::AskUser(_) => {
                 let key = (request.tool.clone(), request.target.clone());
                 let granted = self
@@ -200,47 +237,37 @@ impl PermissionManager {
                 if granted {
                     PermissionOutcome::Allowed
                 } else {
-                    self.evaluate(request)
+                    self.evaluate_with(request, &config)
                 }
             }
             outcome => outcome,
         }
     }
 
-    /// Policy evaluation without grant handling (single choke point above).
-    fn evaluate(&self, request: &ToolRequest) -> PermissionOutcome {
+    /// Policy evaluation, given a config snapshot (the single choke point
+    /// above). Taking the config by reference keeps one decision consistent
+    /// even if the mode changes while the request is being checked.
+    fn evaluate_with(
+        &self,
+        request: &ToolRequest,
+        config: &PermissionsConfig,
+    ) -> PermissionOutcome {
         let tool = request.tool.as_str();
 
         if is_shell_tool(tool) {
-            return self.check_shell(request);
+            return self.check_shell(request, config);
         }
         if tool == "git_push" {
-            return self.decide(
-                request,
-                self.config.git_push,
-                AskReason::PolicyRequiresConfirmation,
-            );
+            return self.decide(request, config.git_push, AskReason::PolicyRequiresConfirmation);
         }
         if READ_TOOLS.contains(&tool) {
-            return self.decide(
-                request,
-                self.config.read,
-                AskReason::PolicyRequiresConfirmation,
-            );
+            return self.decide(request, config.read, AskReason::PolicyRequiresConfirmation);
         }
         if EDIT_TOOLS.contains(&tool) {
-            return self.decide(
-                request,
-                self.config.edit,
-                AskReason::PolicyRequiresConfirmation,
-            );
+            return self.decide(request, config.edit, AskReason::PolicyRequiresConfirmation);
         }
         if DELETE_TOOLS.contains(&tool) {
-            return self.decide(
-                request,
-                self.config.delete,
-                AskReason::PolicyRequiresConfirmation,
-            );
+            return self.decide(request, config.delete, AskReason::PolicyRequiresConfirmation);
         }
         PermissionOutcome::Denied(Denial {
             tool: request.tool.clone(),
@@ -249,7 +276,11 @@ impl PermissionManager {
         })
     }
 
-    fn check_shell(&self, request: &ToolRequest) -> PermissionOutcome {
+    fn check_shell(
+        &self,
+        request: &ToolRequest,
+        config: &PermissionsConfig,
+    ) -> PermissionOutcome {
         // sudo is never allowed silently (Negócio §9).
         if is_sudo_command(&request.target) {
             return PermissionOutcome::Denied(Denial {
@@ -258,7 +289,7 @@ impl PermissionManager {
                 reason: DenyReason::SudoBlocked,
             });
         }
-        let base = self.config.shell;
+        let base = config.shell;
         // git push via shell is still git push (Negócio §8).
         if is_git_push_command(&request.target) {
             return self.escalate(request, base, AskReason::GitPushRequiresConfirmation);
@@ -459,6 +490,31 @@ mod tests {
             manager.check(&request),
             PermissionOutcome::AskUser(AskReason::PolicyRequiresConfirmation)
         );
+    }
+
+    #[test]
+    fn a_confirmation_does_not_survive_a_mode_change() {
+        use crate::workspace::AiMode;
+        let mut manager = PermissionManager::new(PermissionsConfig {
+            edit: PermissionDecision::Ask,
+            shell: PermissionDecision::Ask,
+            ..PermissionsConfig::default()
+        });
+        // Confirm an edit while the AI may still be allowed to write.
+        manager.grant_once("edit_file", "a.rs");
+        assert!(manager
+            .check(&ToolRequest::new("edit_file", "a.rs"))
+            .is_allowed());
+
+        // Drop to Mentor: the consent was for the previous mode, not a
+        // standing permission, and the policy now denies outright.
+        let mut mentor = PermissionsConfig::default();
+        AiMode::Mentor.apply_to(&mut mentor);
+        manager.set_config(mentor);
+        assert!(matches!(
+            manager.check(&ToolRequest::new("edit_file", "a.rs")),
+            PermissionOutcome::Denied(_)
+        ));
     }
 
     #[test]

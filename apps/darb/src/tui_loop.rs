@@ -22,7 +22,7 @@ use darb_core::events::{DarbEvent, EventBus};
 use darb_core::i18n::{global_format, global_text, init_global, set_language, Locale};
 use darb_core::permissions::{PermissionManager, ToolRequest};
 use darb_core::t;
-use darb_core::workspace::{GitSnapshot, Workspace};
+use darb_core::workspace::{AiMode, GitSnapshot, Workspace};
 use darb_memory::project::ProjectPaths;
 use darb_memory::storage::MemoryDb;
 use darb_providers::interface::Provider;
@@ -124,9 +124,9 @@ enum Pending {
 /// a parameter per data source.
 struct Ui {
     app: App,
-    /// Single source of truth about the project (P0). The application layer
-    /// is the only writer; `App` remains the view-model the TUI renders.
-    workspace: Workspace,
+    /// Event bus used to publish `WorkspaceChanged`. `None` when there is
+    /// no bus to publish on; announcing is then skipped rather than faked.
+    bus: Option<EventBus>,
     registry: ToolRegistry,
     config: DarbConfig,
     model_label: String,
@@ -139,24 +139,42 @@ struct Ui {
 }
 
 impl Ui {
+    /// The application layer is the only writer of the workspace. The `App`
+    /// holds the *same* value, not a copy: a second copy is exactly what
+    /// P0 removed, and it would drift from the panels the moment anything
+    /// changed one side and not the other.
+    fn workspace(&self) -> &Workspace {
+        &self.app.workspace
+    }
+
+    fn workspace_mut(&mut self) -> &mut Workspace {
+        &mut self.app.workspace
+    }
+
     fn new(
         app: App,
+        bus: Option<EventBus>,
         registry: ToolRegistry,
         config: DarbConfig,
         model_label: String,
         language: Locale,
         project_root: &std::path::Path,
     ) -> Self {
-        let workspace = Workspace::new(project_root);
-        // The workspace already knows the project name; the app must not
-        // invent its own, or the header and the workspace can disagree.
         let mut app = app;
-        if !workspace.project_name.is_empty() {
-            app.project_name = workspace.project_name.clone();
-        }
+        app.workspace = Workspace::new(project_root);
+        // The workspace already knows the project name; the header must not
+        // invent its own, or the two can disagree.
+        app.project_name = app.workspace.project_name.clone();
+        // The mode starts at Mentor (least power), so the very first thing
+        // the app does is tighten whatever the config allowed. Applying it
+        // once here means there is no window where a tool could run under
+        // the wrong policy.
+        let mut policy = config.permissions.clone();
+        app.workspace.mode.apply_to(&mut policy);
+        registry.set_permissions(policy);
         Self {
             app,
-            workspace,
+            bus,
             registry,
             config,
             model_label,
@@ -165,6 +183,27 @@ impl Ui {
             sys: None,
             sys_refresh: None,
         }
+    }
+
+    /// Switch the AI mode and make it real (P1).
+    ///
+    /// The workspace records it, the permission gate is rewritten, and the
+    /// new state is announced. If the last part is missing, the feature is
+    /// cosmetic: a Mentor that still writes files is worse than no Mentor
+    /// at all, because the user believes it.
+    fn set_ai_mode(&mut self, mode: AiMode) {
+        self.workspace_mut().mode = mode;
+        let mut policy = self.config.permissions.clone();
+        mode.apply_to(&mut policy);
+        self.registry.set_permissions(policy);
+        self.announce_workspace();
+    }
+
+    /// Cycle Mentor → Assist → Autonomous → Mentor.
+    fn cycle_ai_mode(&mut self) -> AiMode {
+        let next = self.workspace_mut().cycle_mode();
+        self.set_ai_mode(next);
+        next
     }
 
     /// Refresh the CPU/RAM snapshot at most every ~2s (performance
@@ -192,17 +231,28 @@ impl Ui {
         }
     }
 
-    /// Record the porcelain git status in the workspace, then mirror the
-    /// counts into the view-model. The parsing lives in
-    /// `darb_core::workspace::GitSnapshot` so the desktop will read exactly
-    /// the same numbers from the same input.
+    /// Record the porcelain git status in the workspace, then announce it.
+    /// The TUI reads the values straight from the workspace, so there is
+    /// nothing to mirror: the old copy of branch/counts on `App` could drift
+    /// from the Git panel, and the desktop would have needed a third copy.
+    /// Parsing lives in `darb_core::workspace::GitSnapshot` so every renderer
+    /// sees the same numbers from the same input.
     fn apply_git(&mut self, output: &str) {
-        self.workspace.git = GitSnapshot::parse(output);
-        let git = &self.workspace.git;
-        self.app.git_branch = git.branch.clone();
-        self.app.git_staged = git.staged;
-        self.app.git_changes = git.changes;
-        self.app.git_untracked = git.untracked;
+        self.workspace_mut().git = GitSnapshot::parse(output);
+        self.announce_workspace();
+    }
+
+    /// Publish the current workspace. The TUI already holds it (it writes
+    /// it), so this exists for the *other* subscribers: the desktop shell
+    /// and any future tool. Emitting the whole state rather than a diff
+    /// means a late subscriber renders the truth instead of a patch it
+    /// never saw.
+    fn announce_workspace(&self) {
+        if let Some(bus) = &self.bus {
+            let _ = bus.emit(DarbEvent::WorkspaceChanged {
+                workspace: self.workspace().clone(),
+            });
+        }
     }
 
     /// Re-list the current directory through the read-only view registry
@@ -233,16 +283,16 @@ impl Ui {
     /// Show the repository status in the Git panel. A failure (no
     /// repository, no git binary) is reported *inside* the panel instead
     /// of as an error popup: that is where the user asked to look.
+    /// Record the repository state. On failure the workspace is reset too:
+    /// a panel that keeps showing a stale branch while the error text says
+    /// "not a repository" is worse than showing nothing.
     fn refresh_git(&mut self) {
         let result = self.registry.dispatch(&ToolRequest::new("git_status", ""));
         if result.success {
             self.apply_git(&result.output);
             self.app.set_git(&result.output);
         } else {
-            self.app.git_branch.clear();
-            self.app.git_staged = 0;
-            self.app.git_changes = 0;
-            self.app.git_untracked = 0;
+            self.workspace_mut().git = GitSnapshot::default();
             self.app.set_git(result.error.as_deref().unwrap_or(""));
         }
     }
@@ -517,7 +567,9 @@ pub fn run() -> i32 {
                     provider,
                     config.provider.model.clone(),
                     registry,
-                    bus,
+                    // Cloned, not moved: the UI publishes
+                    // `WorkspaceChanged` on this same channel.
+                    bus.clone(),
                     config.agent.clone(),
                 )
                 .with_responder(Arc::new(UiResponder { tx: query_tx }))
@@ -525,9 +577,6 @@ pub fn run() -> i32 {
             ))
         }
         Err(reason) => {
-            // No agent: keep the bus alive so the event drain below simply
-            // idles instead of seeing a closed channel.
-            let _keepalive = bus;
             drop(query_tx);
             eprintln!("{}", t!("app.provider_unavailable", reason = reason));
             None
@@ -541,6 +590,9 @@ pub fn run() -> i32 {
     let mouse_enabled = config.interface.mouse;
     let mut ui = Ui::new(
         App::new(),
+        // Cloned, not moved: the agent already holds a handle and the UI
+        // publishes `WorkspaceChanged` on the same channel.
+        Some(bus.clone()),
         view_registry,
         config,
         model_label,
@@ -675,6 +727,20 @@ pub fn run() -> i32 {
             Ok(_) => None,
             Err(_) => break,
         };
+        // The AI power mode is handled here, not in the view: switching it
+        // rewrites the permission policy, and only this layer holds the
+        // registry. Intercepting the action before `handle_key` means the
+        // view can never widen its own permissions with a keystroke.
+        if let Some(MouseOrKey::Key(key)) = event {
+            if key.kind == crossterm::event::KeyEventKind::Press
+                && darb_tui::keybindings::action_for(key)
+                    == darb_tui::keybindings::Action::CycleAiMode
+            {
+                let mode = ui.cycle_ai_mode();
+                ui.app.toast(ToastKind::Info, format!("[ {} ]", mode.name()));
+                continue;
+            }
+        }
         let outcome = match event {
             Some(MouseOrKey::Key(key)) => ui.app.handle_key(key),
             Some(MouseOrKey::Mouse(mouse)) => {
@@ -811,10 +877,118 @@ mod tests {
             darb_core::config::PermissionDecision::Allow,
         );
         ui.apply_git("## main\n M src/a.rs\nM  src/b.rs\n?? new.txt\n D gone.rs");
-        assert_eq!(ui.app.git_branch, "main");
-        assert_eq!(ui.app.git_staged, 1);
-        assert_eq!(ui.app.git_changes, 2);
-        assert_eq!(ui.app.git_untracked, 1);
+        // Read through the workspace, not through a mirror on `App`: the
+        // whole point of P0 is that there is only one copy of this state.
+        let git = &ui.workspace().git;
+        assert_eq!(git.branch, "main");
+        assert_eq!(git.staged, 1);
+        assert_eq!(git.changes, 2);
+        assert_eq!(git.untracked, 1);
+    }
+
+    #[test]
+    fn the_header_reads_the_same_branch_the_workspace_holds() {
+        let mut ui = ui_with_edit(
+            &std::env::temp_dir(),
+            darb_core::config::PermissionDecision::Allow,
+        );
+        ui.apply_git("## main...origin/main\nM  src/a.rs\n");
+        // What the panels draw and what the app exposes must not diverge.
+        assert_eq!(ui.app.git_branch(), ui.workspace().git.branch);
+        assert!(ui.app.git_change_summary().contains('+'));
+    }
+
+    /// Render the real frame and flatten it to text, so a test can assert on
+    /// what the user actually sees rather than on internal fields.
+    fn rendered(app: &App) -> String {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(110, 34))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| darb_tui::app::render(frame, app, &darb_tui::theme::Theme::default()))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<String>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_workspace_change_reaches_the_rendered_header() {
+        let mut app = App::new();
+        let screen_before = rendered(&app);
+        assert!(!screen_before.contains("feature-x"), "{screen_before}");
+        // The application layer publishes; the view adopts. This is the
+        // end-to-end proof that workspace state drives what is drawn.
+        app.apply_event(&DarbEvent::WorkspaceChanged {
+            workspace: Workspace {
+                project_name: "feature-x".to_string(),
+                ..Workspace::default()
+            },
+        });
+        let screen = rendered(&app);
+        assert!(screen.contains("feature-x"), "{screen}");
+    }
+
+    #[test]
+    fn the_workspace_is_the_only_copy() {
+        let ui = ui_with_edit(
+            &std::env::temp_dir(),
+            darb_core::config::PermissionDecision::Allow,
+        );
+        // `Ui` must not keep a second Workspace: two copies would drift.
+        assert_eq!(ui.workspace().project_name, ui.app.project_name);
+    }
+
+    #[test]
+    fn mentor_refuses_to_edit_even_when_the_config_allowed_it() {
+        use darb_core::config::PermissionDecision::Allow;
+        let mut ui = ui_with_edit(&std::env::temp_dir(), Allow);
+        // The helper grants edit; Mentor must still take it away. This is
+        // the whole feature: the mode is a ceiling on the user's config.
+        ui.set_ai_mode(AiMode::Mentor);
+        let outcome = ui
+            .registry
+            .dispatch(&darb_core::permissions::ToolRequest::new("edit_file", "a.rs"));
+        assert!(
+            !outcome.success,
+            "mentor edited a file: {}",
+            outcome.output
+        );
+    }
+
+    #[test]
+    fn switching_to_autonomous_really_enables_editing() {
+        use darb_core::config::PermissionDecision::Allow;
+        let mut ui = ui_with_edit(&std::env::temp_dir(), Allow);
+        assert!(ui.workspace().mode == AiMode::Mentor, "starts at least power");
+        ui.cycle_ai_mode();
+        ui.cycle_ai_mode();
+        assert_eq!(ui.workspace().mode, AiMode::Autonomous);
+        // The same request that Mentor refused now reaches the tool. The
+        // file may or may not exist; what matters is that the gate opened.
+        let policy = ui.registry.permissions_config();
+        assert_eq!(policy.edit, Allow, "autonomous allows edits");
+    }
+
+    #[test]
+    fn the_mode_is_reflected_in_the_policy_in_force() {
+        use darb_core::config::PermissionDecision::{Allow, Ask, Deny};
+        let mut ui = ui_with_edit(&std::env::temp_dir(), Allow);
+        ui.set_ai_mode(AiMode::Assist);
+        let policy = ui.registry.permissions_config();
+        assert_eq!(policy.edit, Ask, "assist asks before writing");
+        assert_eq!(policy.read, Allow, "assist still reads freely");
+        ui.set_ai_mode(AiMode::Autonomous);
+        assert_eq!(ui.registry.permissions_config().edit, Allow);
+        ui.set_ai_mode(AiMode::Mentor);
+        let policy = ui.registry.permissions_config();
+        assert_eq!(policy.edit, Deny);
+        assert_eq!(policy.shell, Deny, "mentor never runs commands");
     }
 
     fn temp_root(name: &str) -> PathBuf {
@@ -839,6 +1013,7 @@ mod tests {
         );
         Ui::new(
             App::new(),
+            None,
             registry,
             config,
             "test-model".to_string(),

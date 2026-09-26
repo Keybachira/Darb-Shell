@@ -149,7 +149,7 @@ impl Default for PerformanceConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct PermissionsConfig {
     #[serde(default = "default_allow")]

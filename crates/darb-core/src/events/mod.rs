@@ -8,6 +8,7 @@
 use tokio::sync::broadcast;
 
 use crate::errors::{DarbError, Result};
+use crate::workspace::Workspace;
 
 /// Agent lifecycle states (Agents §9, Negócio §28).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +84,14 @@ pub enum DarbEvent {
         prompt: u64,
         completion: u64,
     },
+    /// The shared workspace changed. Carries the new state rather than a
+    /// diff, so a late subscriber still renders the truth instead of
+    /// replaying a patch it never saw. The application layer is the only
+    /// writer; every view (TUI now, desktop later) reacts to this instead of
+    /// re-deriving the same values from its own copies.
+    WorkspaceChanged {
+        workspace: Workspace,
+    },
 }
 
 /// Default channel capacity: large enough for an agent burst
@@ -90,6 +99,10 @@ pub enum DarbEvent {
 /// to stay far from the low-memory budget.
 const DEFAULT_CAPACITY: usize = 64;
 
+/// A bus handle. `Clone` so the application layer and the UI can both hold
+/// one and publish to the same channel: `WorkspaceChanged` is emitted by
+/// whoever writes the state, observed by whoever renders it.
+#[derive(Clone)]
 pub struct EventBus {
     sender: broadcast::Sender<DarbEvent>,
 }
@@ -165,5 +178,28 @@ mod tests {
     fn zero_capacity_falls_back_to_default() {
         let bus = EventBus::new(0);
         bus.emit(DarbEvent::ConfigReloaded).expect("must succeed");
+    }
+
+    #[tokio::test]
+    async fn workspace_changed_carries_the_whole_state() {
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe();
+        let mut ws = Workspace::new(std::path::Path::new("/tmp/demo-project"));
+        ws.git = crate::workspace::GitSnapshot {
+            branch: "main".to_string(),
+            staged: 2,
+            ..Default::default()
+        };
+        bus.emit(DarbEvent::WorkspaceChanged { workspace: ws })
+            .expect("emit must succeed");
+        // A subscriber that joined late still gets the truth, not a diff it
+        // never saw: that is why the event carries the state.
+        let DarbEvent::WorkspaceChanged { workspace } = rx.recv().await.expect("must receive")
+        else {
+            panic!("expected WorkspaceChanged");
+        };
+        assert_eq!(workspace.project_name, "demo-project");
+        assert_eq!(workspace.git.branch, "main");
+        assert_eq!(workspace.git.staged, 2);
     }
 }

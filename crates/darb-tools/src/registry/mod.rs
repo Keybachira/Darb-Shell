@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use darb_core::config::PermissionsConfig;
 use darb_core::errors::DarbError;
 use darb_core::permissions::{
     AskReason, Denial, PermissionManager, PermissionOutcome, ToolRequest,
@@ -102,6 +103,20 @@ impl ToolRegistry {
     /// denials.
     pub fn grant_once(&self, tool: &str, target: &str) {
         self.permissions.grant_once(tool, target);
+    }
+
+    /// Swap the permission policy (P1: the AI mode is applied here).
+    ///
+    /// The next dispatch is already governed by the new policy, so
+    /// switching to Mentor stops writes at once rather than at the next
+    /// agent run.
+    pub fn set_permissions(&self, config: PermissionsConfig) {
+        self.permissions.set_config(config);
+    }
+
+    /// The policy currently in force, for panels that show it.
+    pub fn permissions_config(&self) -> PermissionsConfig {
+        self.permissions.config()
     }
 
     /// Check permission, then execute. The clock covers execution only,
