@@ -265,8 +265,24 @@ mod tests {
         assert_eq!(format_text("a {x} b", &[]), "a {x} b");
     }
 
+    // These tests mutate the process-wide `GLOBAL` locale, so they must not
+    // run concurrently with each other: the harness runs tests in parallel
+    // by default, and one test calling `set_language(En)` mid-flight makes
+    // another observe the wrong language. A per-module mutex keeps them
+    // ordered. Tests that only build a local `I18n` need no lock.
+    static GLOBAL_LOCALE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take the global-locale lock, poisoning-tolerant: a panicking test
+    /// must not cascade into every other one.
+    fn locale_guard() -> std::sync::MutexGuard<'static, ()> {
+        GLOBAL_LOCALE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn macro_fills_named_arguments() {
+        let _guard = locale_guard();
         init_global(Locale::Pt).expect("init must succeed");
         assert_eq!(crate::t!("app.profile", name = "eco"), "Perfil: eco");
         assert_eq!(
@@ -283,6 +299,7 @@ mod tests {
 
     #[test]
     fn global_text_and_macro_agree() {
+        let _guard = locale_guard();
         init_global(Locale::En).expect("init must succeed");
         assert_eq!(global_text("agent.thinking"), "Thinking...");
         assert_eq!(crate::t!("agent.thinking"), "Thinking...");

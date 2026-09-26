@@ -8,6 +8,3 @@ description = "Darb Memory — session / project memory backed by SQLite"
 [dependencies]
 darb-core.workspace = true
 rusqlite.workspace = true
-serde.workspace = true
-thiserror.workspace = true
-anyhow.workspace = true

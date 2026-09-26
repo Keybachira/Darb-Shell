@@ -81,10 +81,7 @@ pub fn shell_layout(
     let system_height = SYSTEM_MIN_ROWS.min(explorer.height.saturating_sub(4));
     let left_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),
-            Constraint::Length(system_height),
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(system_height)])
         .split(explorer);
     let terminal_height = if bottom_open {
         TERMINAL_OPEN_HEIGHT

@@ -6,5 +6,4 @@ pub mod errors;
 pub mod events;
 pub mod i18n;
 pub mod permissions;
-pub mod runtime;
-pub mod session;
+pub mod workspace;

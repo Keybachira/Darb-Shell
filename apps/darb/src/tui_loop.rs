@@ -22,12 +22,13 @@ use darb_core::events::{DarbEvent, EventBus};
 use darb_core::i18n::{global_format, global_text, init_global, set_language, Locale};
 use darb_core::permissions::{PermissionManager, ToolRequest};
 use darb_core::t;
+use darb_core::workspace::{GitSnapshot, Workspace};
 use darb_memory::project::ProjectPaths;
 use darb_memory::storage::MemoryDb;
 use darb_providers::interface::Provider;
 use darb_providers::openai::OpenAIAdapter;
 use darb_tools::registry::{ToolRegistry, ToolResult};
-use darb_tui::app::{render, App, FileEntry, Focus, KeyOutcome, MessageRole, ToastKind, Tab};
+use darb_tui::app::{render, App, FileEntry, Focus, KeyOutcome, MessageRole, Tab, ToastKind};
 use darb_tui::palette::Command;
 use darb_tui::theme::Theme;
 use ratatui::layout::Rect;
@@ -123,6 +124,9 @@ enum Pending {
 /// a parameter per data source.
 struct Ui {
     app: App,
+    /// Single source of truth about the project (P0). The application layer
+    /// is the only writer; `App` remains the view-model the TUI renders.
+    workspace: Workspace,
     registry: ToolRegistry,
     config: DarbConfig,
     model_label: String,
@@ -141,9 +145,18 @@ impl Ui {
         config: DarbConfig,
         model_label: String,
         language: Locale,
+        project_root: &std::path::Path,
     ) -> Self {
+        let workspace = Workspace::new(project_root);
+        // The workspace already knows the project name; the app must not
+        // invent its own, or the header and the workspace can disagree.
+        let mut app = app;
+        if !workspace.project_name.is_empty() {
+            app.project_name = workspace.project_name.clone();
+        }
         Self {
             app,
+            workspace,
             registry,
             config,
             model_label,
@@ -159,7 +172,9 @@ impl Ui {
     /// the sysinfo baseline (its first read is always ~0).
     fn refresh_system(&mut self) {
         let now = Instant::now();
-        if self.sys_refresh.is_some_and(|last| now.duration_since(last) < Duration::from_secs(2))
+        if self
+            .sys_refresh
+            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(2))
         {
             return;
         }
@@ -177,49 +192,17 @@ impl Ui {
         }
     }
 
-    /// Parse the porcelain git status into branch + change counts and
-    /// mirror them into the app (header/status/context all reuse it).
-    /// The first line is `## branch…`; the rest are `XY path` / `?? path`.
+    /// Record the porcelain git status in the workspace, then mirror the
+    /// counts into the view-model. The parsing lives in
+    /// `darb_core::workspace::GitSnapshot` so the desktop will read exactly
+    /// the same numbers from the same input.
     fn apply_git(&mut self, output: &str) {
-        let mut lines = output.lines();
-        let head = lines.next().unwrap_or("");
-        self.app.git_branch = head
-            .strip_prefix("## ")
-            .map(|branch| {
-                branch
-                    .split('[')
-                    .next()
-                    .unwrap_or(branch)
-                    .trim()
-                    .to_string()
-            })
-            .unwrap_or_default();
-        let mut staged = 0usize;
-        let mut changes = 0usize;
-        let mut untracked = 0usize;
-        for line in lines {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if let Some(rest) = line.strip_prefix("?? ") {
-                if !rest.is_empty() {
-                    untracked += 1;
-                }
-            } else {
-                let codes = line.as_bytes();
-                if codes.len() >= 2 {
-                    if codes[0] != b' ' {
-                        staged += 1;
-                    }
-                    if codes[1] != b' ' {
-                        changes += 1;
-                    }
-                }
-            }
-        }
-        self.app.git_staged = staged;
-        self.app.git_changes = changes;
-        self.app.git_untracked = untracked;
+        self.workspace.git = GitSnapshot::parse(output);
+        let git = &self.workspace.git;
+        self.app.git_branch = git.branch.clone();
+        self.app.git_staged = git.staged;
+        self.app.git_changes = git.changes;
+        self.app.git_untracked = git.untracked;
     }
 
     /// Re-list the current directory through the read-only view registry
@@ -423,10 +406,8 @@ impl Ui {
                     MessageRole::System,
                     format!("🌐 {}", self.language.as_str()),
                 );
-                self.app.toast(
-                    ToastKind::Info,
-                    format!("🌐 {}", self.language.as_str()),
-                );
+                self.app
+                    .toast(ToastKind::Info, format!("🌐 {}", self.language.as_str()));
             }
         }
         false
@@ -558,7 +539,14 @@ pub fn run() -> i32 {
     // Docs §32/§34: clickable when the terminal supports mouse. Read before
     // `config` moves into `Ui`; capture enable below is config-driven.
     let mouse_enabled = config.interface.mouse;
-    let mut ui = Ui::new(App::new(), view_registry, config, model_label, language);
+    let mut ui = Ui::new(
+        App::new(),
+        view_registry,
+        config,
+        model_label,
+        language,
+        &root,
+    );
     ui.app.ai_online = agent.is_some();
     ui.app.model_label = ui.model_label.clone();
     ui.app.profile = ui.config.performance.profile.clone();
@@ -822,9 +810,7 @@ mod tests {
             &std::env::temp_dir(),
             darb_core::config::PermissionDecision::Allow,
         );
-        ui.apply_git(
-            "## main\n M src/a.rs\nM  src/b.rs\n?? new.txt\n D gone.rs",
-        );
+        ui.apply_git("## main\n M src/a.rs\nM  src/b.rs\n?? new.txt\n D gone.rs");
         assert_eq!(ui.app.git_branch, "main");
         assert_eq!(ui.app.git_staged, 1);
         assert_eq!(ui.app.git_changes, 2);
@@ -857,6 +843,7 @@ mod tests {
             config,
             "test-model".to_string(),
             Locale::En,
+            root,
         )
     }
 

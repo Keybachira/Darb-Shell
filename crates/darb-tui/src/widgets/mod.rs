@@ -142,7 +142,11 @@ pub fn render_toasts(frame: &mut ratatui::Frame, area: Rect, app: &crate::app::A
         };
         let line = Line::from(vec![
             Span::styled(format!(" {} ", toast.marker()), style),
-            truncated_span(toast.text.clone(), (area.width as usize).saturating_sub(4), style),
+            truncated_span(
+                toast.text.clone(),
+                (area.width as usize).saturating_sub(4),
+                style,
+            ),
         ]);
         let rect = Rect::new(
             area.x,

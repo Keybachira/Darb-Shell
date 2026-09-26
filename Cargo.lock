@@ -15,25 +15,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "aho-corasick"
-version = "1.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
-
-[[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "atomic-waker"
@@ -196,13 +181,11 @@ dependencies = [
 name = "darb"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "crossterm",
  "darb-agent",
  "darb-context",
  "darb-core",
  "darb-memory",
- "darb-plugins",
  "darb-providers",
  "darb-tools",
  "darb-tui",
@@ -215,7 +198,6 @@ dependencies = [
 name = "darb-agent"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "darb-context",
  "darb-core",
  "darb-memory",
@@ -223,7 +205,6 @@ dependencies = [
  "darb-tools",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
 ]
 
@@ -231,21 +212,15 @@ dependencies = [
 name = "darb-context"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "darb-core",
  "darb-tools",
- "serde",
- "thiserror",
- "tree-sitter",
 ]
 
 [[package]]
 name = "darb-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "serde",
- "thiserror",
  "tokio",
  "toml",
 ]
@@ -254,34 +229,18 @@ dependencies = [
 name = "darb-memory"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "darb-core",
  "rusqlite",
- "serde",
- "thiserror",
-]
-
-[[package]]
-name = "darb-plugins"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "darb-core",
- "serde",
- "thiserror",
- "toml",
 ]
 
 [[package]]
 name = "darb-providers"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "darb-core",
  "reqwest",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
 ]
 
@@ -289,26 +248,18 @@ dependencies = [
 name = "darb-tools"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "darb-core",
- "darb-providers",
  "serde",
  "serde_json",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
 name = "darb-tui"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "crossterm",
  "darb-core",
  "ratatui",
- "serde",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -1201,35 +1152,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "regex"
-version = "1.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
-name = "regex-automata"
-version = "0.4.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-syntax",
-]
-
-[[package]]
-name = "regex-syntax"
-version = "0.8.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
-
-[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1445,7 +1367,6 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
- "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -1550,12 +1471,6 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
-name = "streaming-iterator"
-version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b2231b7c3057d5e4ad0156fb3dc807d900806020c5ffa3ee6ff2c8c76fb8520"
 
 [[package]]
 name = "strsim"
@@ -1679,26 +1594,6 @@ dependencies = [
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "thiserror"
-version = "2.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
-dependencies = [
- "thiserror-impl",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "2.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.5",
 ]
 
 [[package]]
@@ -1877,26 +1772,6 @@ checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
 ]
-
-[[package]]
-name = "tree-sitter"
-version = "0.25.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78f873475d258561b06f1c595d93308a7ed124d9977cb26b148c2084a4a3cc87"
-dependencies = [
- "cc",
- "regex",
- "regex-syntax",
- "serde_json",
- "streaming-iterator",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-language"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca0d1bf6fdd806e43ae5198f82f527056d359def39e54e67a0f478ac09dac081"
 
 [[package]]
 name = "try-lock"

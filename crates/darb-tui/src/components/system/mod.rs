@@ -21,20 +21,10 @@ pub fn render_system(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
     // Telemetry: drawn only when a measurement exists (cpu_percent >= 0).
     if app.cpu_percent >= 0.0 {
-        lines.push(widgets::gauge(
-            "CPU",
-            app.cpu_percent / 100.0,
-            16,
-            theme,
-        ));
+        lines.push(widgets::gauge("CPU", app.cpu_percent / 100.0, 16, theme));
     }
     if app.mem_percent >= 0.0 {
-        lines.push(widgets::gauge(
-            "RAM",
-            app.mem_percent / 100.0,
-            16,
-            theme,
-        ));
+        lines.push(widgets::gauge("RAM", app.mem_percent / 100.0, 16, theme));
         if !app.mem_total.is_empty() {
             lines.push(widgets::kv_line(
                 "mem",
@@ -69,11 +59,7 @@ pub fn render_system(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     ));
 
     frame.render_widget(
-        Paragraph::new(lines).block(widgets::panel(
-            global_text("panel.system"),
-            false,
-            theme,
-        )),
+        Paragraph::new(lines).block(widgets::panel(global_text("panel.system"), false, theme)),
         area,
     );
 }

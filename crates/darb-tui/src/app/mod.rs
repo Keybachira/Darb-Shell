@@ -676,10 +676,7 @@ impl App {
     /// palette).
     pub fn cycle_mode(&mut self) {
         self.agent_mode = self.agent_mode.next();
-        self.toast(
-            ToastKind::Info,
-            format!("[ {} ]", self.agent_mode.name()),
-        );
+        self.toast(ToastKind::Info, format!("[ {} ]", self.agent_mode.name()));
     }
 
     /// Uptime label for the status bar: `4m`, `2h07m`.
@@ -1404,7 +1401,9 @@ pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
 /// git summary, model, AI link, user and version on the right. Every
 /// segment is real state; segments without data simply do not render.
 pub fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let logo_style = Style::default().fg(theme.accent).add_modifier(Modifier::BOLD);
+    let logo_style = Style::default()
+        .fg(theme.accent)
+        .add_modifier(Modifier::BOLD);
     // Pulse while the agent runs: the logo is the spinner anchor.
     let logo = if app.agent_busy() {
         header_spinner(app)
@@ -1427,11 +1426,7 @@ pub fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     if !app.git_branch.is_empty() {
         left.push(separator(theme));
         left.push(Span::styled(
-            format!(
-                "⎇ {} ({})",
-                app.git_branch,
-                app.git_change_summary()
-            ),
+            format!("⎇ {} ({})", app.git_branch, app.git_change_summary()),
             Style::default().fg(theme.secondary),
         ));
     }
@@ -1613,7 +1608,7 @@ fn render_input(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         style = style.fg(theme.secondary);
     }
     let text = if app.input.is_empty() {
-        format!("{}", global_text("chat.placeholder"))
+        global_text("chat.placeholder").to_string()
     } else {
         let marker = if app.input_history_index.is_some() {
             "⌛ "
@@ -1630,10 +1625,7 @@ fn render_terminal_strip(frame: &mut Frame, area: Rect, app: &App, theme: &Theme
     use ratatui::style::Style;
     use ratatui::widgets::Paragraph;
 
-    let label = format!(
-        "▴ {} (Ctrl+J)",
-        global_text("panel.terminal")
-    );
+    let label = format!("▴ {} (Ctrl+J)", global_text("panel.terminal"));
     let mode = format!(" [{}]", app.agent_mode.name());
     frame.render_widget(
         Paragraph::new(Line::from(vec![

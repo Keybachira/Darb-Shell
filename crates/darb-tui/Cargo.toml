@@ -9,7 +9,3 @@ description = "Darb TUI — Ratatui + Crossterm interface (presentation only, no
 darb-core.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
-tokio.workspace = true
-serde.workspace = true
-thiserror.workspace = true
-anyhow.workspace = true

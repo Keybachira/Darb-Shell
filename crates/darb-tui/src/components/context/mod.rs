@@ -17,7 +17,10 @@ use crate::widgets;
 pub fn render_context(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
 
-    lines.push(widgets::section_header(&global_text("context.session"), theme));
+    lines.push(widgets::section_header(
+        &global_text("context.session"),
+        theme,
+    ));
     if app.token_prompt > 0 {
         lines.push(widgets::kv_line(
             &global_text("context.tokens"),
@@ -51,18 +54,20 @@ pub fn render_context(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     }
 
     if !app.git_branch.is_empty() || app.git_changes + app.git_staged + app.git_untracked > 0 {
-        lines.push(widgets::section_header(&global_text("context.workspace"), theme));
+        lines.push(widgets::section_header(
+            &global_text("context.workspace"),
+            theme,
+        ));
         if !app.git_branch.is_empty() {
             lines.push(widgets::kv_line("branch", app.git_branch.clone(), theme));
         }
-        lines.push(widgets::kv_line(
-            "changes",
-            app.git_change_summary(),
-            theme,
-        ));
+        lines.push(widgets::kv_line("changes", app.git_change_summary(), theme));
     }
 
-    lines.push(widgets::section_header(&global_text("context.entries_header"), theme));
+    lines.push(widgets::section_header(
+        &global_text("context.entries_header"),
+        theme,
+    ));
     lines.push(widgets::kv_line(
         &global_text("context.entries"),
         app.files.len().to_string(),
