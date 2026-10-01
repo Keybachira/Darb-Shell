@@ -11,3 +11,8 @@ tokio.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# `toml` for the declarative model catalogue (P2 step 1). The plan puts the
+# model list in `configs/models.toml` so it is not compiled into the binary:
+# adding a model must not require a rebuild. Same reason `darb-core` already
+# depends on it for human-edited config.
+toml.workspace = true

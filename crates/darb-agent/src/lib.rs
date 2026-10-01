@@ -7,6 +7,8 @@ pub mod loop_;
 pub mod planner;
 pub mod reviewer;
 pub mod state;
+pub mod supervisor;
 pub mod tool_calling;
 
 pub use loop_::{Agent, FinalResult, PermissionResponder};
+pub use supervisor::{Handle, StopReason, Supervisor};

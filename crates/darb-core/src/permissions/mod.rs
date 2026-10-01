@@ -183,10 +183,7 @@ impl PermissionManager {
     /// A snapshot of the current policy. Returns the default on a poisoned
     /// lock rather than panicking: a stuck lock must not take the app down.
     pub fn config(&self) -> PermissionsConfig {
-        self.config
-            .read()
-            .map(|c| c.clone())
-            .unwrap_or_default()
+        self.config.read().map(|c| c.clone()).unwrap_or_default()
     }
 
     /// Replace the policy wholesale (P1: the application layer applies the
@@ -258,7 +255,11 @@ impl PermissionManager {
             return self.check_shell(request, config);
         }
         if tool == "git_push" {
-            return self.decide(request, config.git_push, AskReason::PolicyRequiresConfirmation);
+            return self.decide(
+                request,
+                config.git_push,
+                AskReason::PolicyRequiresConfirmation,
+            );
         }
         if READ_TOOLS.contains(&tool) {
             return self.decide(request, config.read, AskReason::PolicyRequiresConfirmation);
@@ -267,7 +268,11 @@ impl PermissionManager {
             return self.decide(request, config.edit, AskReason::PolicyRequiresConfirmation);
         }
         if DELETE_TOOLS.contains(&tool) {
-            return self.decide(request, config.delete, AskReason::PolicyRequiresConfirmation);
+            return self.decide(
+                request,
+                config.delete,
+                AskReason::PolicyRequiresConfirmation,
+            );
         }
         PermissionOutcome::Denied(Denial {
             tool: request.tool.clone(),
@@ -276,11 +281,7 @@ impl PermissionManager {
         })
     }
 
-    fn check_shell(
-        &self,
-        request: &ToolRequest,
-        config: &PermissionsConfig,
-    ) -> PermissionOutcome {
+    fn check_shell(&self, request: &ToolRequest, config: &PermissionsConfig) -> PermissionOutcome {
         // sudo is never allowed silently (Negócio §9).
         if is_sudo_command(&request.target) {
             return PermissionOutcome::Denied(Denial {
@@ -495,7 +496,7 @@ mod tests {
     #[test]
     fn a_confirmation_does_not_survive_a_mode_change() {
         use crate::workspace::AiMode;
-        let mut manager = PermissionManager::new(PermissionsConfig {
+        let manager = PermissionManager::new(PermissionsConfig {
             edit: PermissionDecision::Ask,
             shell: PermissionDecision::Ask,
             ..PermissionsConfig::default()

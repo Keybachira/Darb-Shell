@@ -32,6 +32,10 @@ pub enum Action {
     /// Cycle the AI power mode (P1: Mentor/Assist/Autonomous). Separate
     /// from `CycleMode`, which cycles the *task* mode (plan/code/debug).
     CycleAiMode,
+    /// The kill-switch for background work. Deliberately its own key
+    /// rather than a mode change: "stop what you are doing" must never
+    /// require reasoning about which mode is active.
+    StopBackground,
     Ignore,
 }
 
@@ -45,6 +49,10 @@ pub fn action_for(key: KeyEvent) -> Action {
         if key.modifiers.contains(KeyModifiers::SHIFT) {
             return match key.code {
                 KeyCode::Char('m') | KeyCode::Char('M') => Action::CycleAiMode,
+                // Kill-switch for background work. X is unused, and the
+                // shift form is required so a plain Ctrl+X never stops
+                // the agent by accident.
+                KeyCode::Char('x') | KeyCode::Char('X') => Action::StopBackground,
                 _ => Action::Ignore,
             };
         }

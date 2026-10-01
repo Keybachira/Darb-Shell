@@ -45,6 +45,15 @@ pub fn render_context(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             theme,
         ));
     }
+    // The router's reasoning, on its own line and dimmed: a model name
+    // with no justification is the thing P2 set out to fix, so the reason
+    // is shown next to it rather than buried in a log.
+    if !app.route_note.is_empty() {
+        lines.push(Line::styled(
+            format!("  {}", app.route_note),
+            Style::default().fg(theme.faint),
+        ));
+    }
     if app.tool_calls > 0 {
         lines.push(widgets::kv_line(
             &global_text("app.tools"),

@@ -6,8 +6,13 @@ language = "pt"
 profile = "eco"
 
 [provider]
+# `model = "auto"` (or empty) hands the choice to the router, which reads
+# `configs/models.toml` under `budget`. Naming a model here overrides
+# routing entirely — the model you typed is the model you get.
 name = "openai"
-model = "..."
+model = "auto"
+budget = "cheapest"
+catalogue = "configs/models.toml"
 
 [interface]
 language = "pt"

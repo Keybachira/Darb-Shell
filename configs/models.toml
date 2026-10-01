@@ -1,0 +1,46 @@
+# Darb Shell — model catalogue (P2, Docs/PLAN.md).
+#
+# The router picks from this file. Adding a model must not require a
+# rebuild, so the list lives here and not in the binary.
+#
+# Fields, all optional except `id` and `provider`:
+#
+#   cost      free | low | medium | high   (default: medium)
+#   speed     slow | medium | fast          (default: medium)
+#   strengths reason | code | quick | long
+#             EMPTY = a generalist, which can serve any task. That is a
+#             real choice, not a missing value.
+#   local     true when the model runs on this machine. Local wins ties,
+#             because on the E2-1800 target no network round trip is often
+#             the whole latency budget.
+#
+# Order is the user's preference and it is honoured: the router takes
+# the first affordable match that handles the task, preferring `local`
+# among equals. There is no hidden scoring, so the choice is always
+# explainable and always the same for the same input.
+
+# --- local first: the E2-1800 target runs Ollama, and a local model
+# beats a remote one for short work (PLAN P2 step 4).
+[[models]]
+id = "qwen2.5-coder:1.5b"
+provider = "ollama"
+cost = "free"
+speed = "fast"
+strengths = ["code", "quick"]
+local = true
+
+[[models]]
+id = "qwen2.5:1.5b"
+provider = "ollama"
+cost = "free"
+speed = "medium"
+strengths = ["reason", "long"]
+local = true
+
+# --- remote: stronger, but it costs money and adds latency.
+[[models]]
+id = "gpt-4o-mini"
+provider = "openai"
+cost = "low"
+speed = "fast"
+strengths = ["quick", "code", "reason", "long"]

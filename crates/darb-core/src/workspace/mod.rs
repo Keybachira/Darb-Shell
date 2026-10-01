@@ -659,9 +659,8 @@ mod tests {
     #[test]
     fn the_mode_permission_table_is_exactly_the_documented_one() {
         use PermissionDecision::{Allow, Ask, Deny};
-        let cell = |mode: AiMode, f: fn(&PermissionsConfig) -> PermissionDecision| {
-            f(&mode.permissions())
-        };
+        let cell =
+            |mode: AiMode, f: fn(&PermissionsConfig) -> PermissionDecision| f(&mode.permissions());
         let read = |c: &PermissionsConfig| c.read;
         let edit = |c: &PermissionsConfig| c.edit;
         let shell = |c: &PermissionsConfig| c.shell;
@@ -699,11 +698,7 @@ mod tests {
             Allow => 2,
         };
         let mut previous = 0;
-        for mode in [
-            AiMode::Mentor,
-            AiMode::Assist,
-            AiMode::Autonomous,
-        ] {
+        for mode in [AiMode::Mentor, AiMode::Assist, AiMode::Autonomous] {
             let p = mode.permissions();
             let power = rank(p.edit) + rank(p.shell);
             assert!(power >= previous, "{} is not more powerful", mode.name());

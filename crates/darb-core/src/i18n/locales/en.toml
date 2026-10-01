@@ -13,6 +13,10 @@ config_reloaded = "config reloaded"
 provider_unavailable = "note: remote AI unavailable ({reason}) — local tools still work"
 memory_unavailable = "memory unavailable ({reason}) — continuing without transcript"
 mouse_unavailable = "mouse unavailable ({reason}) — continuing keyboard-only"
+background_stopped = "Background agent stopped"
+background_paused = "Background agent paused — {mode} mode"
+background_idle = "Background queue done · {count} tasks"
+refused_by_mode = "refused by {mode} mode"
 previous_session = "··· previous session ···"
 
 [agent]

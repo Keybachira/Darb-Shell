@@ -73,6 +73,29 @@ impl Default for AppConfig {
     }
 }
 
+/// How much the router may spend on a call (P2 step 3).
+///
+/// Lives here, in `darb-core`, rather than next to the router: config is
+/// read before the providers are built, and `darb-providers` depends on
+/// `darb-core`, not the other way round. The `From<RoutingBudget> for
+/// Budget` conversion in the router is the one place the two
+/// vocabularies meet, so the translation cannot be forgotten.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RoutingBudget {
+    /// Spend nothing if avoidable. The default, because the project
+    /// targets an E2-1800 where money is as real a constraint as RAM.
+    #[default]
+    Cheapest,
+    Balanced,
+    Best,
+}
+
+/// The catalogue ships with the repo, next to the other defaults.
+fn default_catalogue_path() -> String {
+    "configs/models.toml".to_string()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {
@@ -80,6 +103,14 @@ pub struct ProviderConfig {
     pub name: String,
     #[serde(default = "default_provider_model")]
     pub model: String,
+    /// How much the router may spend (P2 step 3). A ceiling, not a
+    /// target: a cheaper model always satisfies it.
+    #[serde(default)]
+    pub budget: RoutingBudget,
+    /// Where the model catalogue lives. Relative paths resolve against
+    /// the project root, so a checkout and an install behave the same.
+    #[serde(default = "default_catalogue_path")]
+    pub catalogue: String,
 }
 
 impl Default for ProviderConfig {
@@ -87,6 +118,8 @@ impl Default for ProviderConfig {
         Self {
             name: default_provider_name(),
             model: default_provider_model(),
+            budget: RoutingBudget::default(),
+            catalogue: default_catalogue_path(),
         }
     }
 }
@@ -271,6 +304,56 @@ pub fn load_from_file(path: impl AsRef<Path>) -> Result<DarbConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The routing knobs have to survive a real parse, not just the
+    /// struct default: a typo like `budget = "cheap"` must be a config
+    /// error the user sees, and `budget = "balanced"` must reach the
+    /// router as that exact value.
+    #[test]
+    fn routing_settings_parse() {
+        let cfg = load_from_str(
+            r#"
+[provider]
+name = "openai"
+model = "auto"
+budget = "balanced"
+catalogue = "my/models.toml"
+"#,
+        )
+        .expect("parses");
+        assert_eq!(cfg.provider.budget, RoutingBudget::Balanced);
+        assert_eq!(cfg.provider.catalogue, "my/models.toml");
+    }
+
+    /// Absent means the documented default, and the default is frugal:
+    /// the project targets an E2-1800, so spending money by omission
+    /// would be the wrong default.
+    #[test]
+    fn routing_defaults_are_frugal() {
+        let cfg = load_from_str("").expect("parses");
+        assert_eq!(cfg.provider.budget, RoutingBudget::Cheapest);
+        assert_eq!(cfg.provider.catalogue, "configs/models.toml");
+    }
+
+    /// An unknown budget is rejected rather than silently falling back to
+    /// the default: quietly choosing a different spending policy than the
+    /// one asked for is exactly the kind of hidden decision the project
+    /// forbids.
+    #[test]
+    fn an_unknown_budget_is_an_error() {
+        let err = load_from_str("[provider]\nbudget = \"cheap\"\n").unwrap_err();
+        assert!(err.to_string().contains("budget"), "{err}");
+    }
+
+    /// An older config with no `[provider]` routing keys still loads, so
+    /// upgrading does not break an existing setup.
+    #[test]
+    fn a_config_without_routing_keys_still_loads() {
+        let cfg = load_from_str("[provider]\nname = \"openai\"\nmodel = \"gpt-4o-mini\"\n")
+            .expect("parses");
+        assert_eq!(cfg.provider.model, "gpt-4o-mini");
+        assert_eq!(cfg.provider.budget, RoutingBudget::Cheapest);
+    }
 
     #[test]
     fn empty_config_uses_safe_defaults() {

@@ -92,6 +92,24 @@ pub enum DarbEvent {
     WorkspaceChanged {
         workspace: Workspace,
     },
+    /// One queued task started in the background. Separate from
+    /// `AgentStarted` so a view can label unattended work as such: a
+    /// background edit and a reply to a keystroke must not look alike.
+    BackgroundTaskStarted {
+        task: String,
+    },
+    /// Background work stopped early. `reason` is a short stable label
+    /// ("stopped" / "paused") from the supervisor, so the view shows the
+    /// reason without re-deriving the mode itself.
+    BackgroundHalted {
+        reason: &'static str,
+    },
+    /// The background queue drained. `completed` is the running total
+    /// since the supervisor started, so a view can show progress without
+    /// keeping a counter of its own.
+    BackgroundIdle {
+        completed: u64,
+    },
 }
 
 /// Default channel capacity: large enough for an agent burst

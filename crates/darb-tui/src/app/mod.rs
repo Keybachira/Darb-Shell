@@ -389,6 +389,11 @@ pub struct App {
     pub ai_online: bool,
     /// Display name of the provider/model, e.g. `openai/gpt-…`.
     pub model_label: String,
+    /// Why the router picked that model, in one line (P2 step 5). Empty
+    /// when no model was routed — the configured one needs no defence.
+    /// Kept as a field because the panel renders from `&App` and cannot
+    /// reach the router that produced it.
+    pub route_note: String,
     /// Short project name shown in the header. Mirrors
     /// `workspace.project_name`; kept as a field because the header renders
     /// before anything else is known, and a `&App` render cannot reach out
@@ -400,6 +405,15 @@ pub struct App {
     pub started: Instant,
     /// Pending toast notifications, newest last.
     pub toasts: Vec<Toast>,
+    /// Whether the supervisor is working through a queue right now.
+    /// Drives the footer indicator: a background agent the user cannot
+    /// see is the failure mode WORKLOGIC §3 warns about, so its activity
+    /// is always on screen while it lasts.
+    pub background_active: bool,
+    /// Background tasks finished so far this session, from
+    /// `BackgroundIdle`. Kept so the footer can report progress without
+    /// the view keeping a second counter of its own.
+    pub background_done: u64,
 }
 
 impl Default for App {
@@ -451,10 +465,13 @@ impl Default for App {
             tool_calls: 0,
             ai_online: false,
             model_label: String::new(),
+            route_note: String::new(),
             project_name: String::new(),
             user: String::new(),
             started: Instant::now(),
             toasts: Vec::new(),
+            background_active: false,
+            background_done: 0,
         }
     }
 }
@@ -544,6 +561,38 @@ impl App {
                 self.project_name = workspace.project_name.clone();
                 self.workspace = workspace.clone();
             }
+            DarbEvent::BackgroundTaskStarted { task } => {
+                // Labelled distinctly from a submitted task: the user did
+                // not type this one, and a view that draws them the same
+                // hides that the agent is working unattended.
+                self.background_active = true;
+                self.push(MessageRole::System, format!("◈◈ {task}"));
+            }
+            DarbEvent::BackgroundHalted { reason } => {
+                self.background_active = false;
+                self.push(
+                    MessageRole::System,
+                    if *reason == "paused" {
+                        format!(
+                            "⏸ {}",
+                            global_format(
+                                "app.background_paused",
+                                &[("mode", self.ai_mode_label())]
+                            )
+                        )
+                    } else {
+                        format!("⏹ {}", global_text("app.background_stopped"))
+                    },
+                );
+            }
+            DarbEvent::BackgroundIdle { completed } => {
+                self.background_active = false;
+                self.background_done = *completed;
+                self.push(
+                    MessageRole::System,
+                    global_format("app.background_idle", &[("count", &completed.to_string())]),
+                );
+            }
             DarbEvent::ErrorOccurred { message } => {
                 self.push(
                     MessageRole::System,
@@ -566,6 +615,15 @@ impl App {
     pub fn push(&mut self, role: MessageRole, text: String) {
         self.messages.push(ChatMessage { role, text });
         self.scroll = 0;
+    }
+
+    /// The AI power mode name, read from the workspace rather than kept
+    /// in a second field. `Workspace` is the single source of truth
+    /// (P0), so a copy here would drift from the one the supervisor obeys
+    /// — and a footer saying AUTONOMOUS while the agent runs as Mentor is
+    /// exactly the bug this avoids.
+    pub fn ai_mode_label(&self) -> &'static str {
+        self.workspace.mode.name()
     }
 
     /// Drop the conversation, keeping the transcript on disk untouched
@@ -1020,6 +1078,12 @@ impl App {
             // view that could flip the mode on its own would be able to
             // widen its own permissions.
             Action::CycleAiMode => KeyOutcome::Ignored,
+            // Same reasoning, one step further: the kill-switch changes
+            // what the agent may do next, and stopping is the application
+            // layer's call because only it owns the supervisor and the
+            // agent handle. The view reports the intent as ignored and
+            // `apps/darb` intercepts the key before it gets here.
+            Action::StopBackground => KeyOutcome::Ignored,
             Action::ToggleEdit => {
                 self.toggle_edit();
                 KeyOutcome::Ignored
@@ -1681,6 +1745,17 @@ fn render_statusbar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         format!(" {}", app.workspace.mode.name()),
         Style::default().fg(theme.secondary),
     ));
+    // Background activity is announced here, next to the mode that
+    // authorises it, because "the AI may write" and "the AI is writing"
+    // are different facts, and only the second means the machine is busy.
+    if app.background_active {
+        left.push(Span::styled(
+            format!(" ⟳ BG {}", app.background_done),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     if app.cpu_percent >= 0.0 {
         let cpu_color = if app.cpu_percent >= 90.0 {
             theme.danger
@@ -1844,6 +1919,62 @@ mod tests {
             message: "boom".to_string(),
         });
         assert!(app.messages.iter().any(|m| m.text.contains("boom")));
+    }
+
+    /// Background work is visibly background: the activity flag and the
+    /// counter move on their own events, with no polling, so a user who
+    /// looks away and comes back can tell what happened.
+    #[test]
+    fn background_events_drive_the_indicator() {
+        let mut app = App::new();
+        assert!(!app.background_active);
+        app.apply_event(&DarbEvent::BackgroundTaskStarted {
+            task: "run the tests".to_string(),
+        });
+        assert!(app.background_active);
+        app.apply_event(&DarbEvent::BackgroundIdle { completed: 3 });
+        assert!(!app.background_active);
+        assert_eq!(app.background_done, 3);
+    }
+
+    /// Halting clears the indicator too, and the two reasons stay
+    /// distinguishable. A pause (the mode took the power back) and a
+    /// stop (the user asked) are different facts; the test compares the
+    /// two renderings instead of matching English, so it holds in any
+    /// configured locale.
+    #[test]
+    fn halt_clears_the_indicator_with_a_reason() {
+        let render = |reason: &'static str| {
+            let mut app = App::new();
+            app.apply_event(&DarbEvent::BackgroundTaskStarted {
+                task: "t".to_string(),
+            });
+            app.apply_event(&DarbEvent::BackgroundHalted { reason });
+            assert!(!app.background_active, "{reason} must clear the flag");
+            app.messages.last().expect("a message").text.clone()
+        };
+        assert_ne!(
+            render("stopped"),
+            render("paused"),
+            "a user stop and a mode pause must not read the same"
+        );
+    }
+
+    /// The chat marks unattended work differently from a submitted task,
+    /// so the transcript never implies the user asked for it.
+    #[test]
+    fn background_tasks_are_marked_as_such() {
+        let mut app = App::new();
+        app.apply_event(&DarbEvent::AgentStarted {
+            task: "typed".to_string(),
+        });
+        app.apply_event(&DarbEvent::BackgroundTaskStarted {
+            task: "queued".to_string(),
+        });
+        let texts: Vec<String> = app.messages.iter().map(|m| m.text.clone()).collect();
+        let typed = texts.iter().find(|t| t.contains("typed")).expect("typed");
+        let queued = texts.iter().find(|t| t.contains("queued")).expect("queued");
+        assert_ne!(typed, queued, "background work must look different");
     }
 
     #[test]

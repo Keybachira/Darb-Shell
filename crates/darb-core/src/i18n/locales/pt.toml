@@ -13,6 +13,10 @@ config_reloaded = "configuração recarregada"
 provider_unavailable = "nota: IA remota indisponível ({reason}) — as ferramentas locais continuam a funcionar"
 memory_unavailable = "memória indisponível ({reason}) — a continuar sem transcrição"
 mouse_unavailable = "rato indisponível ({reason}) — a continuar só com teclado"
+background_stopped = "Agente em fundo parado"
+background_paused = "Agente em fundo em pausa — modo {mode}"
+background_idle = "Fila de fundo concluída · {count} tarefas"
+refused_by_mode = "recusado pelo modo {mode}"
 previous_session = "··· sessão anterior ···"
 
 [agent]

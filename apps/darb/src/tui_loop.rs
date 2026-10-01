@@ -16,6 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use darb_agent::supervisor::Supervisor;
 use darb_agent::{Agent, PermissionResponder};
 use darb_core::config::DarbConfig;
 use darb_core::events::{DarbEvent, EventBus};
@@ -27,6 +28,7 @@ use darb_memory::project::ProjectPaths;
 use darb_memory::storage::MemoryDb;
 use darb_providers::interface::Provider;
 use darb_providers::openai::OpenAIAdapter;
+use darb_providers::{route, Catalogue, TaskKind};
 use darb_tools::registry::{ToolRegistry, ToolResult};
 use darb_tui::app::{render, App, FileEntry, Focus, KeyOutcome, MessageRole, Tab, ToastKind};
 use darb_tui::palette::Command;
@@ -71,15 +73,55 @@ pub(crate) fn init_i18n() -> Locale {
     language
 }
 
-fn build_provider(config: &DarbConfig) -> Result<Box<dyn Provider>, String> {
-    if config.provider.model.trim().is_empty() || config.provider.model.trim() == "..." {
-        return Err("no model configured".to_string());
+/// Resolve the model for this task and build its provider.
+///
+/// The router decides the model; this function only turns the decision
+/// into a live adapter. When the catalogue is present it also supplies
+/// the model id and the provider name, so `[provider] model` becomes a
+/// *fallback* rather than the only way to talk to a model — that is what
+/// makes routing a real feature instead of a label.
+///
+/// Without a catalogue the old path runs unchanged, so a checkout whose
+/// `configs/models.toml` is missing still starts.
+fn build_provider(
+    config: &DarbConfig,
+    root: &std::path::Path,
+) -> Result<(Box<dyn Provider>, String), String> {
+    // A configured model wins over routing: the user who typed a model id
+    // meant it, and silently replacing it would be the kind of quiet
+    // decision the docs forbid.
+    let explicit = !config.provider.model.trim().is_empty()
+        && config.provider.model.trim() != "..."
+        && config.provider.model != "auto";
+    if explicit {
+        let provider = build_adapter(&config.provider.name)?;
+        return Ok((provider, config.provider.model.clone()));
     }
-    match config.provider.name.as_str() {
+
+    let path = root.join(&config.provider.catalogue);
+    let catalogue = match Catalogue::load(&path) {
+        Ok(c) => c,
+        Err(e) => return Err(format!("{e}; set [provider] model to skip routing")),
+    };
+    // `Code` is the task the agent loop actually issues today; routing per
+    // step of the loop is the next refinement and is deliberately not
+    // claimed here.
+    let choice = route(&catalogue, TaskKind::Code, config.provider.budget.into())
+        .map_err(|e| format!("{e}; set [provider] model to skip routing"))?;
+    let provider = build_adapter(&choice.model.provider)?;
+    Ok((provider, choice.reason))
+}
+
+/// Build one adapter by name. Unknown providers name the ones that exist,
+/// because "not implemented yet" without a list is not actionable.
+fn build_adapter(provider: &str) -> Result<Box<dyn Provider>, String> {
+    match provider {
         "openai" => OpenAIAdapter::from_env()
             .map(|adapter| Box::new(adapter) as Box<dyn Provider>)
             .map_err(|e| e.to_string()),
-        other => Err(format!("provider '{other}' is not implemented yet")),
+        other => Err(format!(
+            "provider '{other}' is not implemented yet (available: openai)"
+        )),
     }
 }
 
@@ -136,6 +178,11 @@ struct Ui {
     /// fails — the panels then simply show no gauges.
     sys: Option<System>,
     sys_refresh: Option<Instant>,
+    /// Owns the background queue. The UI holds it because the mode is
+    /// changed from the keyboard here: this is the single place where a
+    /// new `AiMode` becomes a new permission policy, so it is also the
+    /// only place that may halt background work.
+    supervisor: Supervisor,
 }
 
 impl Ui {
@@ -182,6 +229,10 @@ impl Ui {
             tool_count: 0,
             sys: None,
             sys_refresh: None,
+            // Starts aligned with the mode the app boots in (Mentor), so
+            // there is no window in which a queue could run under a mode
+            // the user never chose.
+            supervisor: Supervisor::new(AiMode::Mentor),
         }
     }
 
@@ -196,7 +247,23 @@ impl Ui {
         let mut policy = self.config.permissions.clone();
         mode.apply_to(&mut policy);
         self.registry.set_permissions(policy);
+        // Background work follows the mode, in the direction that
+        // protects the user: leaving `Autonomous` halts the queue, and
+        // entering it does not restart one that was stopped on purpose.
+        let halted = self.supervisor.set_mode(mode);
+        if let Some(reason) = halted {
+            self.app
+                .toast(ToastKind::Warning, reason.label().to_string());
+        }
         self.announce_workspace();
+    }
+
+    /// The kill-switch. Stops the background queue; the supervisor checks
+    /// its flag between tasks and the agent loop checks its own at every
+    /// iteration boundary, so nothing is aborted mid-write. The in-flight
+    /// run is cancelled by the caller, which owns the `Agent` handle.
+    fn stop_background(&mut self) {
+        self.supervisor.stop();
     }
 
     /// Cycle Mentor → Assist → Autonomous → Mentor.
@@ -366,8 +433,29 @@ impl Ui {
             self.app.ask_permission(&request.tool, &request.target);
             return Some(Pending::Save(request));
         }
+        // A refusal is reported where the user asked to look rather than
+        // swallowed: in `Mentor` the save is refused by policy, and a
+        // silent no-op here would look exactly like a broken key (P1 step
+        // 5: the mode must change what happens, not just what is shown).
+        let refused = result.metadata.get("permission").map(String::as_str) == Some("denied");
+        if refused {
+            self.app
+                .push(MessageRole::System, format!("⌀ {}", self.mode_refusal()));
+            return None;
+        }
         self.report_save(&request, &result);
         None
+    }
+
+    /// Why the current mode refused the action, naming the mode. The
+    /// permission manager already decided; this only makes the decision
+    /// legible, which is the difference between "nothing happened" and
+    /// "the mode you are in is the reason".
+    fn mode_refusal(&self) -> String {
+        global_format(
+            "app.refused_by_mode",
+            &[("mode", self.workspace().mode.name())],
+        )
     }
 
     /// Surface the save in the chat: refresh the snapshot on success so
@@ -557,9 +645,19 @@ pub fn run() -> i32 {
     let mut events = bus.subscribe();
     let (query_tx, mut query_rx) = mpsc::unbounded_channel::<oneshot::Sender<bool>>();
 
+    // The label says *what was chosen and why* (P2 step 5), not just the
+    // configured name — a routed model is a decision the user should be
+    // able to see without asking.
     let model_label = format!("{}/{}", config.provider.name, config.provider.model);
-    let agent: Option<Arc<Agent>> = match build_provider(&config) {
-        Ok(provider) => {
+    let (provider, route_note) = match build_provider(&config, &root) {
+        Ok(pair) => (Some(pair.0), pair.1),
+        Err(reason) => {
+            eprintln!("{}", t!("app.provider_unavailable", reason = reason));
+            (None, String::new())
+        }
+    };
+    let agent: Option<Arc<Agent>> = match provider {
+        Some(provider) => {
             let registry =
                 ToolRegistry::new(PermissionManager::new(config.permissions.clone()), &root);
             Some(Arc::new(
@@ -576,9 +674,10 @@ pub fn run() -> i32 {
                 .with_context(root.clone(), config.context.max_tokens),
             ))
         }
-        Err(reason) => {
+        // The reason was already reported where it was produced; the
+        // provider handle is simply absent, and the UI shows "offline".
+        None => {
             drop(query_tx);
-            eprintln!("{}", t!("app.provider_unavailable", reason = reason));
             None
         }
     };
@@ -601,6 +700,9 @@ pub fn run() -> i32 {
     );
     ui.app.ai_online = agent.is_some();
     ui.app.model_label = ui.model_label.clone();
+    // The router's own words, not a reconstruction: a reason invented by
+    // the view would be a second opinion on a decision the router made.
+    ui.app.route_note = route_note.clone();
     ui.app.profile = ui.config.performance.profile.clone();
     ui.app.language = language.as_str().to_string();
     ui.app.project_name = root
@@ -732,13 +834,30 @@ pub fn run() -> i32 {
         // registry. Intercepting the action before `handle_key` means the
         // view can never widen its own permissions with a keystroke.
         if let Some(MouseOrKey::Key(key)) = event {
-            if key.kind == crossterm::event::KeyEventKind::Press
-                && darb_tui::keybindings::action_for(key)
-                    == darb_tui::keybindings::Action::CycleAiMode
-            {
-                let mode = ui.cycle_ai_mode();
-                ui.app.toast(ToastKind::Info, format!("[ {} ]", mode.name()));
-                continue;
+            if key.kind == crossterm::event::KeyEventKind::Press {
+                match darb_tui::keybindings::action_for(key) {
+                    darb_tui::keybindings::Action::CycleAiMode => {
+                        let mode = ui.cycle_ai_mode();
+                        ui.app
+                            .toast(ToastKind::Info, format!("[ {} ]", mode.name()));
+                        continue;
+                    }
+                    // The kill-switch is intercepted here for the same
+                    // reason as the mode: it changes what the agent is
+                    // allowed to do next, and only this layer owns the
+                    // supervisor. Letting the view emit it would put a
+                    // permission-adjacent control in the presentation.
+                    darb_tui::keybindings::Action::StopBackground => {
+                        ui.stop_background();
+                        if let Some(agent) = &agent {
+                            agent.cancel();
+                        }
+                        ui.app
+                            .push(MessageRole::System, global_text("app.background_stopped"));
+                        continue;
+                    }
+                    _ => {}
+                }
             }
         }
         let outcome = match event {
@@ -767,9 +886,30 @@ pub fn run() -> i32 {
                     Some(agent) if !busy => {
                         busy = true;
                         let running = Arc::clone(agent);
-                        handle.spawn(async move {
-                            let _ = running.run(&task).await;
-                        });
+                        // In Autonomous the task is handed to the
+                        // supervisor instead: the user is not waiting on
+                        // this one, so the queue may keep working after
+                        // it. The supervisor re-checks the mode between
+                        // tasks, so leaving Autonomous stops the rest.
+                        if ui.supervisor.can_run() {
+                            let supervisor = Arc::new(ui.supervisor.handle());
+                            let bus = bus.clone();
+                            let queue = vec![task.clone()];
+                            handle.spawn(async move {
+                                supervisor
+                                    .drive(queue, &bus, |t| {
+                                        let running = Arc::clone(&running);
+                                        async move {
+                                            let _ = running.run(&t).await;
+                                        }
+                                    })
+                                    .await;
+                            });
+                        } else {
+                            handle.spawn(async move {
+                                let _ = running.run(&task).await;
+                            });
+                        }
                     }
                     Some(_) => ui.app.push(MessageRole::System, global_text("app.busy")),
                     None => ui.app.push(MessageRole::System, global_text("app.offline")),
@@ -861,7 +1001,7 @@ fn format_bytes(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use darb_core::config::{PermissionDecision, PermissionsConfig};
+    use darb_core::config::PermissionDecision;
 
     #[test]
     fn bytes_format_is_human() {
@@ -953,26 +1093,35 @@ mod tests {
         ui.set_ai_mode(AiMode::Mentor);
         let outcome = ui
             .registry
-            .dispatch(&darb_core::permissions::ToolRequest::new("edit_file", "a.rs"));
-        assert!(
-            !outcome.success,
-            "mentor edited a file: {}",
-            outcome.output
-        );
+            .dispatch(&darb_core::permissions::ToolRequest::new(
+                "edit_file",
+                "a.rs",
+            ));
+        assert!(!outcome.success, "mentor edited a file: {}", outcome.output);
     }
 
+    /// The mode is a *ceiling*, so leaving it must tighten the policy
+    /// and returning to it must restore what the user configured — the
+    /// round trip is the part worth testing, not any single state.
     #[test]
     fn switching_to_autonomous_really_enables_editing() {
-        use darb_core::config::PermissionDecision::Allow;
+        use darb_core::config::PermissionDecision::{Allow, Deny};
+        // Built in Autonomous (see `ui_with_edit`), so the user config
+        // already allows edits.
         let mut ui = ui_with_edit(&std::env::temp_dir(), Allow);
-        assert!(ui.workspace().mode == AiMode::Mentor, "starts at least power");
-        ui.cycle_ai_mode();
-        ui.cycle_ai_mode();
-        assert_eq!(ui.workspace().mode, AiMode::Autonomous);
-        // The same request that Mentor refused now reaches the tool. The
-        // file may or may not exist; what matters is that the gate opened.
+        assert_eq!(ui.registry.permissions_config().edit, Allow);
+
+        // Drop to Mentor: writing is now refused, and the refusal is in
+        // the policy rather than in the view.
+        ui.set_ai_mode(AiMode::Mentor);
+        assert_eq!(ui.registry.permissions_config().edit, Deny);
+
+        // Back to Autonomous: the configured `Allow` is honoured again.
+        // This is what makes the mode a ceiling rather than an override.
+        ui.set_ai_mode(AiMode::Autonomous);
         let policy = ui.registry.permissions_config();
         assert_eq!(policy.edit, Allow, "autonomous allows edits");
+        assert_eq!(policy.git_push, Deny, "autonomous still never pushes");
     }
 
     #[test]
@@ -991,6 +1140,59 @@ mod tests {
         assert_eq!(policy.shell, Deny, "mentor never runs commands");
     }
 
+    /// P1 step 5: changing the mode must change what *happens*, not only
+    /// what the footer shows. In `Mentor` a save is refused by policy, so
+    /// the file on disk is untouched — and the refusal is said out loud,
+    /// because a silent no-op is indistinguishable from a broken key.
+    #[test]
+    fn mentor_refuses_to_write_and_says_why() {
+        use darb_core::config::PermissionDecision::Allow;
+        let root = temp_root("mentor-refuses");
+        std::fs::write(root.join("a.txt"), "ab\ncd\n").expect("write");
+        let mut ui = ui_with_edit(&root, Allow);
+        ui.app
+            .set_file_preview("a.txt".to_string(), "ab\ncd\n".to_string());
+        ui.set_ai_mode(AiMode::Mentor);
+
+        let request = save_request(&mut ui);
+        let pending = ui.run_save(request);
+
+        assert!(pending.is_none(), "mentor never asks; it refuses");
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).expect("read"),
+            "ab\ncd\n",
+            "mentor must not touch the disk"
+        );
+        assert!(
+            ui.app.messages.iter().any(|m| m.text.contains("MENTOR")),
+            "the refusal names the mode responsible: {:?}",
+            ui.app.messages.iter().map(|m| &m.text).collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The mirror image: the same keystroke in `Autonomous` does write.
+    /// Without this pair the test above would pass on a save path that
+    /// simply never works.
+    #[test]
+    fn autonomous_writes_where_mentor_refuses() {
+        use darb_core::config::PermissionDecision::Allow;
+        let root = temp_root("autonomous-writes");
+        std::fs::write(root.join("a.txt"), "ab\ncd\n").expect("write");
+        let mut ui = ui_with_edit(&root, Allow);
+        ui.app
+            .set_file_preview("a.txt".to_string(), "ab\ncd\n".to_string());
+        ui.set_ai_mode(AiMode::Autonomous);
+
+        let request = save_request(&mut ui);
+        assert!(ui.run_save(request).is_none());
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).expect("read"),
+            "Xab\ncd\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn temp_root(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("darb-save-test-{}-{name}", std::process::id()));
@@ -999,19 +1201,26 @@ mod tests {
         dir
     }
 
+    /// Build a `Ui` whose *config* grants `decision` for edits.
+    ///
+    /// Two details matter, and both were bugs in this helper before:
+    ///
+    /// - The decision has to go on `config.permissions`, not only on the
+    ///   registry: `Ui::new` and `set_ai_mode` both re-derive the policy
+    ///   in force from the config, so a registry-only setup is overwritten
+    ///   the moment the mode is applied.
+    /// - The mode is derived from the decision being tested, because the
+    ///   mode's ceiling is applied on top of the config. `Mentor` denies
+    ///   edits outright and `Assist` forces `Ask`, so neither can express
+    ///   "the user allowed this". `Autonomous` is the only mode that
+    ///   leaves a configured `Allow` alone, and it is a strict ceiling in
+    ///   the direction that matters (`sudo`/`git push` stay denied) — so
+    ///   it is also the mode that genuinely exercises the save path.
     fn ui_with_edit(root: &std::path::Path, decision: PermissionDecision) -> Ui {
-        let config = DarbConfig::default();
-        let registry = ToolRegistry::new(
-            PermissionManager::new(PermissionsConfig {
-                read: PermissionDecision::Allow,
-                edit: decision,
-                shell: PermissionDecision::Allow,
-                delete: PermissionDecision::Deny,
-                git_push: PermissionDecision::Deny,
-            }),
-            root,
-        );
-        Ui::new(
+        let mut config = DarbConfig::default();
+        config.permissions.edit = decision;
+        let registry = ToolRegistry::new(PermissionManager::new(config.permissions.clone()), root);
+        let mut ui = Ui::new(
             App::new(),
             None,
             registry,
@@ -1019,7 +1228,9 @@ mod tests {
             "test-model".to_string(),
             Locale::En,
             root,
-        )
+        );
+        ui.set_ai_mode(AiMode::Autonomous);
+        ui
     }
 
     /// Type one char through the real App path, then build the request
